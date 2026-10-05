@@ -795,7 +795,8 @@ export class HudApp {
     const sp = this.loc.last?.speed
     const speed = sp !== undefined && Number.isFinite(sp) ? sp : 0
     const map = Math.round(Math.min(3000, Math.max(800, 3200 - speed * 160)))
-    const slow = Math.min(2, Math.max(1, this.display.stats.avgSendMs / 160))
+    // 宿主单块越慢，间隔越大（实测有设备单块 >1.5s，后台刷新会把通道占满）
+    const slow = Math.min(10, Math.max(1, this.display.stats.avgSendMs / 160))
     const k = (a: number[]) => a.map((v) => Math.round(v * slow))
     switch (view) {
       case 'nav': return k([800, map, 1000, map])
@@ -814,6 +815,54 @@ export class HudApp {
     renderHud(ctx, m)
     if (this.display.mode === 'image') this.display.submit(this.frame)
     else this.display.submitText(buildTextFrame(m))
+  }
+
+  /** 眼镜传输测试：暂停正常刷新，分别测量不同内容/编码的单块发送耗时 */
+  async runBenchmark(onProgress?: (msg: string) => void): Promise<string[]> {
+    const d = this.display
+    const lines: string[] = []
+    d.pause()
+    for (let i = 0; i < 100 && d.busy; i++) await new Promise((r) => setTimeout(r, 100))
+    const W = 288
+    const H = 144
+    const black = new Uint8Array(W * H)
+    // 取当前 HUD 左上块作为「真实画面」样本
+    this.render()
+    const ctx = this.frame.getContext('2d')!
+    const img = ctx.getImageData(0, 0, W, H).data
+    const hud = new Uint8Array(W * H)
+    for (let j = 0; j < hud.length; j++) hud[j] = Math.round(((img[j * 4] * 299 + img[j * 4 + 1] * 587 + img[j * 4 + 2] * 114) / 1000) * 15 / 255)
+    const noise = new Uint8Array(W * H).map(() => (Math.random() * 16) | 0)
+    const cases: [string, Uint8Array, 'gray4' | 'rgba'][] = [
+      ['全黑 · 4位灰度', black, 'gray4'],
+      ['全黑 · RGBA', black, 'rgba'],
+      ['HUD · 4位灰度', hud, 'gray4'],
+      ['HUD · RGBA', hud, 'rgba'],
+      ['噪点 · 4位灰度', noise, 'gray4'],
+    ]
+    try {
+      for (const [name, q, enc] of cases) {
+        const runs: string[] = []
+        let bytes = 0
+        for (let k = 0; k < 2; k++) {
+          onProgress?.(`${name} 第 ${k + 1} 次…`)
+          const r = await d.benchmarkSend(0, q, enc)
+          bytes = r.bytes
+          runs.push(r.result === 'success' ? `${r.ms}ms` : `${r.ms}ms(${r.result})`)
+        }
+        lines.push(`${name}：${runs.join(' / ')} · ${(bytes / 1024).toFixed(1)}KB`)
+      }
+      for (const [name, text] of [['文本 · 短', ' '], ['文本 · 300字', '测'.repeat(300)]] as const) {
+        onProgress?.(`${name}…`)
+        const r1 = await d.benchmarkText(text)
+        const r2 = await d.benchmarkText(' ')
+        lines.push(`${name}：${r1.ms}ms / ${r2.ms}ms${r1.ok ? '' : '（失败）'}`)
+      }
+      lines.push(`当前编码：${d.stats.encoding === 'gray4' ? '4位灰度 PNG' : 'RGBA PNG'} · 平均 ${Math.round(d.stats.avgSendMs)}ms/块`)
+    } finally {
+      await d.resume({ rebuild: false })
+    }
+    return lines
   }
 
   shutdown(): void {

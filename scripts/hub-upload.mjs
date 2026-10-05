@@ -83,7 +83,7 @@ const fileBlob = (f, type) => new Blob([fs.readFileSync(path.join(ROOT, f))], { 
 async function findApp() {
   const data = await get('/api/v1/apps/list', { page: 1, page_size: 100 })
   const list = data?.list ?? data ?? []
-  return list.find((a) => a.package_id === PKG) ?? null
+  return list.map((x) => x.app ?? x).find((a) => a.package_id === PKG) ?? null
 }
 
 async function uploadEhpk(existing) {
@@ -195,6 +195,7 @@ try {
     const cfg = await get('/api/v1/misc/covers_config')
     for (const g of cfg?.list ?? cfg ?? []) for (const c of g.categories ?? []) for (const im of c.images ?? []) console.log(im.original, im.styled)
   }
+  else if (cmd === 'version') { const a = await findApp(); if (!a) throw new Error('应用不存在，先运行 upload'); await uploadEhpk(a); await status() }
   else if (cmd === 'listing') { await updateListing(); await status() }
   else console.log('用法：status | upload | listing')
 } catch (e) {

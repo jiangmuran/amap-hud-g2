@@ -24,6 +24,7 @@ import {
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
 import type { HubBridge } from './bridge'
+import { encodeGray4Png } from './png4'
 
 export const SCREEN_W = 576
 export const SCREEN_H = 288
@@ -65,7 +66,12 @@ export interface ListPage {
 const LIST_TITLE = { id: 21, name: 'list-title' }
 const LIST_BODY = { id: 22, name: 'list-body' }
 
+export type TileEncoding = 'gray4' | 'rgba'
+
 export interface DisplayStats {
+  /** 当前图块编码方式与最近一块的字节数 */
+  encoding: TileEncoding
+  lastTileBytes: number
   /** 各图块累计发送次数（左上、右上、左下、右下） */
   perTile: number[]
   /** 最近一次「操作 → 画面发完」的耗时 */
@@ -95,7 +101,7 @@ export class GlassesDisplay {
   ready = false
   /** 宿主模态层（退出确认）显示期间暂停发送：此时发送必然失败，不能算作通道损坏 */
   private paused = false
-  readonly stats: DisplayStats = { perTile: [0, 0, 0, 0], inputLatencyMs: 0, sends: 0, failures: 0, lastFrameMs: 0, avgSendMs: 0, tilesLastFrame: 0 }
+  readonly stats: DisplayStats = { encoding: 'gray4', lastTileBytes: 0, perTile: [0, 0, 0, 0], inputLatencyMs: 0, sends: 0, failures: 0, lastFrameMs: 0, avgSendMs: 0, tilesLastFrame: 0 }
   /** 已成功发送到眼镜的画面（手机端镜像预览用） */
   readonly shadow = createCanvas(SCREEN_W, SCREEN_H)
   onShadowChange?: () => void
@@ -320,9 +326,15 @@ export class GlassesDisplay {
   submit(src: HTMLCanvasElement): void {
     const ctx = ctx2d(this.frame)
     ctx.drawImage(src, 0, 0)
+    this.frameVersion++
     this.dirty = true
     void this.pump()
   }
+
+  /** 每帧只量化一次：同一帧内反复查询图块哈希时直接复用 */
+  private frameVersion = 0
+  private qCache: ({ v: number; hash: number; data: ImageData; q: Uint8Array } | null)[] = TILES.map(() => null)
+  private gray4Fails = 0
 
   submitText(t: TextFrame): void {
     this.textPending = t
@@ -337,21 +349,67 @@ export class GlassesDisplay {
     await this.rebuild()
   }
 
-  private quantizeTile(i: number): { hash: number; data: ImageData } {
+  private quantizeTile(i: number): { hash: number; data: ImageData; q: Uint8Array } {
+    const c = this.qCache[i]
+    if (c && c.v === this.frameVersion) return c
     const t = TILES[i]
     const data = ctx2d(this.frame).getImageData(t.x, t.y, TILE_W, TILE_H)
     const px = data.data
+    const levels = new Uint8Array(TILE_W * TILE_H)
     let hash = 0x811c9dc5
-    for (let k = 0; k < px.length; k += 4) {
+    for (let k = 0, j = 0; k < px.length; k += 4, j++) {
       const lum = (px[k] * 299 + px[k + 1] * 587 + px[k + 2] * 114) / 1000
       const q = (lum * 15 + 127.5) / 255 | 0
       const v = q * 17
       px[k] = px[k + 1] = px[k + 2] = v
       px[k + 3] = 255
+      levels[j] = q
       hash ^= q
       hash = Math.imul(hash, 0x01000193)
     }
-    return { hash: hash >>> 0, data }
+    const r = { v: this.frameVersion, hash: hash >>> 0, data, q: levels }
+    this.qCache[i] = r
+    return r
+  }
+
+  /** 按当前编码方式生成图块字节：默认 4 位灰度 PNG，宿主不接受时退回 RGBA PNG */
+  private async encodeTile(t: { data: ImageData; q: Uint8Array }): Promise<Uint8Array> {
+    const bytes = this.stats.encoding === 'gray4' ? await encodeGray4Png(t.q, TILE_W, TILE_H) : await this.encode(t.data)
+    this.stats.lastTileBytes = bytes.length
+    return bytes
+  }
+
+  /** 诊断用：直接发送一块指定内容，返回耗时与结果 */
+  async benchmarkSend(i: number, q: Uint8Array, enc: TileEncoding): Promise<{ ms: number; bytes: number; result: string }> {
+    let bytes: Uint8Array
+    if (enc === 'gray4') bytes = await encodeGray4Png(q, TILE_W, TILE_H)
+    else {
+      const data = new ImageData(TILE_W, TILE_H)
+      for (let j = 0; j < q.length; j++) {
+        const v = q[j] * 17
+        data.data[j * 4] = data.data[j * 4 + 1] = data.data[j * 4 + 2] = v
+        data.data[j * 4 + 3] = 255
+      }
+      bytes = await this.encode(data)
+    }
+    const t = TILES[i]
+    const t0 = performance.now()
+    const res = ImageRawDataUpdateResult.normalize(
+      await this.bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: t.id, containerName: t.name, imageData: bytes })),
+    )
+    this.sent[i] = null
+    return { ms: Math.round(performance.now() - t0), bytes: bytes.length, result: String(res) }
+  }
+
+  /** 诊断用：文本容器更新耗时（只在文本页可用时有效，图像页里更新事件层文本） */
+  async benchmarkText(content: string): Promise<{ ms: number; ok: boolean }> {
+    const t0 = performance.now()
+    const ok = await this.bridge.textContainerUpgrade(new TextContainerUpgrade({ containerID: 1, containerName: 'input', content }))
+    return { ms: Math.round(performance.now() - t0), ok: !!ok }
+  }
+
+  get busy(): boolean {
+    return this.pumping
   }
 
   private async encode(data: ImageData): Promise<Uint8Array> {
@@ -413,9 +471,10 @@ export class GlassesDisplay {
       while (this.mode === 'image' && !this.paused && !this.list) {
         this.dirty = false
         const now = performance.now()
-        const boosted = now < this.boostUntil
+        // 操作后：直到这次操作涉及的图块都发完才结束加速（慢链路下 1.5s 不够发完四块）
+        const boosted = now < this.boostUntil || this.inputAt !== 0
         let pick = -1
-        let pickQ: { hash: number; data: ImageData } | null = null
+        let pickQ: { hash: number; data: ImageData; q: Uint8Array } | null = null
         let waitMs = Infinity
         let anyChanged = false
         for (let i = 0; i < TILES.length; i++) {
@@ -452,7 +511,7 @@ export class GlassesDisplay {
           }
           break
         }
-        const bytes = await this.encode(pickQ!.data)
+        const bytes = await this.encodeTile(pickQ!)
         const ok = await this.sendTile(pick, pickQ!, bytes)
         if (!ok) break
         this.lastSentAt[pick] = performance.now()
@@ -497,7 +556,17 @@ export class GlassesDisplay {
     }
 
     this.stats.failures++
-    console.warn(`tile ${t.name} → ${res} (${dt.toFixed(0)}ms)`)
+    console.warn(`tile ${t.name} → ${res} (${dt.toFixed(0)}ms, ${this.stats.encoding})`)
+    // 宿主不接受 4 位灰度 PNG：连续两次图片类错误就退回 RGBA PNG
+    if (this.stats.encoding === 'gray4' && !this.paused &&
+      (res === ImageRawDataUpdateResult.imageException || res === ImageRawDataUpdateResult.imageToGray4Failed || res === ImageRawDataUpdateResult.imageSizeInvalid)) {
+      if (++this.gray4Fails >= 2) {
+        console.warn('宿主不支持 4 位灰度 PNG，改用 RGBA PNG')
+        this.stats.encoding = 'rgba'
+      }
+      this.dirty = true
+      return false
+    }
     if (this.paused) {
       this.dirty = true
       return false

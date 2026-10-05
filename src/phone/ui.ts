@@ -259,6 +259,7 @@ export class PhoneUI {
         }
         return
       case 'test-key': return void this.testKey()
+      case 'bench': return void this.runBench()
       case 'toggle': {
         const key = el.dataset.key as 'basemap' | 'headingUp' | 'focusMode'
         const input = el.querySelector('input') as HTMLInputElement | null
@@ -337,6 +338,23 @@ export class PhoneUI {
     this.app.startNavigation(r, dest)
     this.closeSheet()
     window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  private benchRunning = false
+  private async runBench(): Promise<void> {
+    if (this.benchRunning) return
+    this.benchRunning = true
+    const state = this.root.querySelector<HTMLElement>('#bench-state')
+    const out = this.root.querySelector<HTMLElement>('#bench-out')
+    try {
+      const lines = await this.app.runBenchmark((m) => { if (state) state.textContent = m })
+      if (out) { out.style.display = 'block'; out.textContent = lines.join('\n') }
+      if (state) state.textContent = '完成'
+    } catch (e) {
+      if (state) state.textContent = `失败：${(e as Error).message}`
+    } finally {
+      this.benchRunning = false
+    }
   }
 
   private async testKey(): Promise<void> {
@@ -766,6 +784,11 @@ export class PhoneUI {
         <div class="section">
           <div class="section-header">诊断</div>
           <div class="group" id="diag"></div>
+          <div class="group" style="margin-top:12px">
+            <button class="cell" data-act="bench"><span class="link">眼镜传输测试</span><span class="grow"></span><span class="detail" id="bench-state" style="font-size:15px"></span></button>
+            <div class="cell" id="bench-out" style="display:none;white-space:pre-wrap;font-family:var(--mono);font-size:13px;line-height:1.6"></div>
+          </div>
+          <p class="section-footer">测试约需 20–60 秒，期间眼镜画面会闪动。把结果截图发给开发者，可以帮助定位卡顿。</p>
         </div>
       </div>`
   }
@@ -788,6 +811,7 @@ export class PhoneUI {
         ['显示模式', this.app.display.mode === 'image' ? '图形' : '文本（兜底）'],
         ['图块发送', `${st.sends} 次 · 失败 ${st.failures}`],
         ['平均耗时', `${Math.round(st.avgSendMs)} ms / 图块`],
+        ['图块编码', `${st.encoding === 'gray4' ? '4位灰度 PNG' : 'RGBA PNG'} · ${(st.lastTileBytes / 1024).toFixed(1)}KB`],
         ['操作响应', st.inputLatencyMs ? `${Math.round(st.inputLatencyMs)} ms（最近一次）` : '—'],
         ['街道底图', this.app.basemap.lastError ?? (this.app.basemap.current ? `z${this.app.basemap.current.zoom} 已加载` : '未加载')],
       ]
