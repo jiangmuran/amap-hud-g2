@@ -1,0 +1,31 @@
+{
+  "name": "amap-hud",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 5173",
+    "qr": "evenhub qr --http --port 5173",
+    "sim": "evenhub-simulator http://localhost:5173 --automation-port 9898",
+    "pack": "npm run build && evenhub pack app.json dist -o amaphud.ehpk",
+    "test": "tsx --test tests/*.test.ts",
+    "preview:lan": "scripts/lan-preview.sh start"
+  },
+  "dependencies": {
+    "@evenrealities/even_hub_sdk": "^0.0.16",
+    "@fontsource/orbitron": "^5.3.0",
+    "@fontsource/rajdhani": "^5.3.0"
+  },
+  "devDependencies": {
+    "@evenrealities/evenhub-cli": "^0.1.14",
+    "@evenrealities/evenhub-simulator": "^0.9.5",
+    "@types/node": "^26.6.4",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.2"
+  },
+  "description": "高德导航 HUD for Even Realities G2 smart glasses",
+  "license": "MIT"
+}
