@@ -1,5 +1,5 @@
 {
-  "name": "amap-hud",
+  "name": "realmapcn",
   "private": true,
   "version": "0.3.0",
   "type": "module",
@@ -9,7 +9,7 @@
     "preview": "vite preview --host 0.0.0.0 --port 5173",
     "qr": "evenhub qr --http --port 5173",
     "sim": "evenhub-simulator http://localhost:5173 --automation-port 9898",
-    "pack": "npm run build && evenhub pack app.json dist -o amaphud.ehpk",
+    "pack": "npm run build && evenhub pack app.json dist -o realmapcn.ehpk",
     "test": "tsx --test tests/*.test.ts",
     "preview:lan": "scripts/lan-preview.sh start",
     "check:arrows": "node scripts/check-arrows.mjs"

@@ -675,7 +675,7 @@ export class PhoneUI {
       <div class="sheet-body" style="padding-top:12px">
         <div class="place-head" style="text-align:center">
           <div style="display:grid;place-items:center;margin:4px auto 14px;width:64px;height:64px;border-radius:16px;background:var(--tint);color:#fff">${icon.glasses(34)}</div>
-          <h3>欢迎使用 AMAP HUD</h3>
+          <h3>欢迎使用 RealMapCN</h3>
           <p>请选择你的手机系统，用于定位坐标处理与权限指引</p>
         </div>
         <div class="section"><div class="group with-icon">

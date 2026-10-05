@@ -322,7 +322,7 @@ export function parsePois(raw: unknown): Poi[] {
       cost: cost > 0 ? cost : undefined,
       openToday: str(biz.opentime_today) || undefined,
       area: str(biz.business_area) || undefined,
-      floor: str(indoor.truefloor) || floorFromIndex(str(indoor.floor)),
+      floor: str(indoor.truefloor) || floorFromIndex(str(indoor.floor)) || floorFromAddress(str(p.address)),
       entrance: parseLngLat(str(p.navi?.entr_location)) ?? undefined,
     }]
   })
@@ -333,4 +333,35 @@ function floorFromIndex(f: string): string | undefined {
   const n = Number(f)
   if (!f || !Number.isFinite(n) || n === 0) return undefined
   return n > 0 ? `F${n}` : `B${-n}`
+}
+
+const CN_NUM: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }
+
+function cnToInt(t: string): number {
+  if (/^\d+$/.test(t)) return Number(t)
+  if (t === '十') return 10
+  if (t.startsWith('十')) return 10 + (CN_NUM[t[1]] ?? 0)
+  if (t.endsWith('十')) return (CN_NUM[t[0]] ?? 0) * 10
+  if (t.includes('十')) return (CN_NUM[t[0]] ?? 0) * 10 + (CN_NUM[t[2]] ?? 0)
+  return CN_NUM[t] ?? NaN
+}
+
+/** 室内数据缺失时，从地址里提取楼层：「酒店3层」「一层」「B1层」「地下一层」「负二楼」「5F」 */
+export function floorFromAddress(addr: string): string | undefined {
+  if (!addr) return undefined
+  let m = addr.match(/(?:^|[^A-Za-z])B\s*(\d{1,2})(?:层|楼|F)?(?![\dA-Za-z])/i)
+  if (m) return `B${Number(m[1])}`
+  m = addr.match(/(地下|负)([一二两三四五六七八九十\d]{1,3})(?:层|楼)/)
+  if (m) {
+    const n = cnToInt(m[2])
+    if (n > 0 && n < 10) return `B${n}`
+  }
+  m = addr.match(/([一二两三四五六七八九十\d]{1,3})(?:层|楼)(?!梯|道)/)
+  if (m) {
+    const n = cnToInt(m[1])
+    if (n > 0 && n < 120) return `F${n}`
+  }
+  m = addr.match(/(?:^|[^A-Za-z\d])(\d{1,2})F(?![A-Za-z])/i)
+  if (m) return `F${Number(m[1])}`
+  return undefined
 }

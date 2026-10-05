@@ -1,4 +1,4 @@
-# AMAP HUD · Even G2 高德导航
+# RealMapCN · Even G2 导航 HUD
 
 基于 Even Hub SDK + 高德 Web 服务 API，在 Even Realities G2 眼镜上显示科幻风格的导航 HUD。手机端界面按 Apple HIG 设计。
 
@@ -121,7 +121,7 @@ npm run dev            # http://<局域网IP>:5173（手机扫码时加 HMR_HOST
 npm run qr             # 生成二维码，用 Even App 扫码在眼镜上加载
 npm test               # 单元测试：坐标转换、路线解析、路线跟踪、偏航、到达、POI 字段
 npm run check:arrows   # 渲染回归：方向箭头在各尺寸/角度下视觉指向正确（需先 npm run dev）
-npm run pack           # 构建并打包 amaphud.ehpk
+npm run pack           # 构建并打包 realmapcn.ehpk
 ```
 
 - **浏览器预览**：打开 `http://localhost:5173/?mock=1`，用模拟的眼镜运行。键盘操作：↑↓ 切换视图，Enter 单击，L 长按，D 双击。

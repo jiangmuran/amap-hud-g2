@@ -28,3 +28,22 @@ test('解析 v5 POI 的 business / indoor / navi 字段', () => {
   assert.equal(b.floor, 'B2', '只有楼层序号时转换为 B2')
   assert.equal(b.entrance, undefined)
 })
+
+import { floorFromAddress } from '../src/amap/api.ts'
+
+test('从地址提取楼层', () => {
+  const cases: [string, string | undefined][] = [
+    ['北京城区南三里屯路1号通盈中心洲际酒店3层', 'F3'],
+    ['北京三里屯通盈中心洲际酒店一层', 'F1'],
+    ['太古里南区B1层S1-15', 'B1'],
+    ['国贸商城地下一层', 'B1'],
+    ['某大厦负二楼', 'B2'],
+    ['SOHO 5F 506', 'F5'],
+    ['某商场十二层', 'F12'],
+    ['朝阳区工体北路8号', undefined],
+    ['楼梯旁', undefined],
+    ['1号楼', undefined],        // 楼栋号，不是楼层
+    ['望京SOHO 3号楼5层', 'F5'],
+  ]
+  for (const [addr, want] of cases) assert.equal(floorFromAddress(addr), want, addr)
+})

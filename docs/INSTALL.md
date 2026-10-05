@@ -48,13 +48,13 @@ npx evenhub qr --url "http://192.168.8.4:5173"
 ## ② 私有构建（真机安装 .ehpk）
 
 ```bash
-npm run pack          # 生成 amaphud.ehpk（也可以直接下载 GitHub Release 里的文件）
+npm run pack          # 生成 realmapcn.ehpk（也可以直接下载 GitHub Release 里的文件）
 ```
 
-1. 打开 [hub.evenrealities.com](https://hub.evenrealities.com)，新建项目。包名要和 `app.json` 里的 `package_id` 一致：`com.amaphud.nav`。
-2. 进入项目，切到 **Private builds** 标签页，上传 `amaphud.ehpk`。
+1. 打开 [hub.evenrealities.com](https://hub.evenrealities.com)，新建项目。包名要和 `app.json` 里的 `package_id` 一致：`com.realmapcn.nav`。
+2. 进入项目，切到 **Private builds** 标签页，上传 `realmapcn.ehpk`。
 3. 手机 Even App → **Even Hub** → **Me → Apps → Private builds**，找到这个构建，点 **Install**。
-4. 安装完成后，在眼镜的主菜单里就能找到 **AMAP HUD**，从那里启动。
+4. 安装完成后，在眼镜的主菜单里就能找到 **RealMapCN**，从那里启动。
 
 私有构建这一步会真实走一遍以下流程：
 - manifest 校验；

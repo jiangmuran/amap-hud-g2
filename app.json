@@ -1,20 +1,25 @@
 {
-  "package_id": "com.amaphud.nav",
+  "package_id": "com.realmapcn.nav",
   "edition": "202601",
-  "name": "AMAP HUD",
+  "name": "RealMapCN",
   "version": "0.3.0",
   "min_app_version": "2.2.10",
   "min_sdk_version": "0.0.16",
-  "tagline": "高德导航 · 眼镜端科幻 HUD",
-  "description": "基于高德 Web 服务 API 的 G2 导航：转向指引、局部雷达地图、全局路线、路书、遥测仪表与周边雷达。",
+  "tagline": "科幻风导航 HUD：转向、雷达地图、周边评分与楼层",
+  "description": "基于高德地图数据的 G2 导航：转向指引、局部雷达地图、全局路线、路书、仪表盘、周边评分与楼层，眼镜上直接选目的地。",
   "author": "jiangmuran",
   "entrypoint": "index.html",
-  "supported_languages": ["zh", "en"],
+  "supported_languages": [
+    "zh",
+    "en"
+  ],
   "permissions": [
     {
       "name": "network",
       "desc": "调用高德地图 Web 服务 API 进行地点搜索、路线规划、逆地理编码与天气查询。",
-      "whitelist": ["https://restapi.amap.com"]
+      "whitelist": [
+        "https://restapi.amap.com"
+      ]
     },
     {
       "name": "location",

@@ -1,13 +1,12 @@
 # Even Hub 上架资料
 
-在 [hub.evenrealities.com](https://hub.evenrealities.com) 项目页填写时直接复制以下内容。截图在 `store/screenshots/`，图标在 `store/`。
+在 [hub.evenrealities.com](https://hub.evenrealities.com) 项目页填写时直接复制以下内容。截图在 `store/screenshots/`，图标是 `store/icon-24.png`（像素数据在 `store/icon_data.json`）。
 
-> ⚠️ **提交前先确定应用名**：「AMAP」是高德的英文商标，Even 的审核规则禁止未授权使用品牌，也禁止冒充其他应用，所以用它很可能被拒。下面的备选名都不含第三方商标和 "Even"，长度 ≤ 20 字符。定下来以后要同步修改 `app.json` 的 `name`，因为审核要求商店名和眼镜上显示的名称一致。
+> 机器可读版本：`store/listing.json`（上传脚本使用）。门户限制：名称 ≤20、简介 ≤50、描述 ≤2000、标签 ≤5 个（每个 ≤20）、截图 ≤8 张且必须是 576×288 PNG、图标为 24×24 单色 PNG（每个像素都必须属于某个 2×2 实心块）、不能含 emoji。
 
-## 应用名（≤ 20 字符，不能含 "Even"）
+## 应用名
 
-- 当前：`AMAP HUD`（含高德商标，不建议）
-- 推荐：`NaviHUD` ／ `Pilot HUD` ／ `领航 HUD` ／ `HUD 导航`
+`RealMapCN`（包名 `com.realmapcn.nav`）
 
 ## 一句话简介（Tagline）
 

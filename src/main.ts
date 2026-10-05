@@ -46,7 +46,7 @@ async function boot(): Promise<void> {
     const { route, dest } = app.demoRoute(mode)
     app.startNavigation(route, dest, { simulate: true })
   }
-  console.log('AMAP_HUD_READY', bridge.real ? 'host' : 'mock')
+  console.log('REALMAPCN_READY', bridge.real ? 'host' : 'mock')
 }
 
 boot().catch((e) => {
