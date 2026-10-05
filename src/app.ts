@@ -4,7 +4,7 @@
 import { DeviceConnectType } from '@evenrealities/even_hub_sdk'
 import { AmapClient, QuotaTracker, type Poi, type ReGeo, type Weather } from './amap/api'
 import { angleDiff, bearing, haversine, type LngLat } from './geo'
-import type { GlassesStatus, HubBridge } from './glasses/bridge'
+import type { GlassesStatus, HubBridge, RingStatus } from './glasses/bridge'
 import { createCanvas, GlassesDisplay, SCREEN_H, SCREEN_W, type MenuItem } from './glasses/display'
 import { fmtDistStr } from './hud/format'
 import { templateFor } from './hud/templates'
@@ -91,6 +91,10 @@ export class HudApp {
   session?: NavSession
   sim?: RouteSimulator
   glasses: GlassesStatus = { connected: false }
+  /** R1 戒指（宿主推送了戒指状态时才有） */
+  ring?: RingStatus
+  private glassesSn = ''
+  private lowBatteryWarned = new Set<string>()
   weather?: Weather
   place?: ReGeo
   radar: RadarState = { category: 0, pois: [], loading: false }
@@ -142,13 +146,25 @@ export class HudApp {
       const a = this.input.normalize(e)
       if (a) this.handleInput(a)
     })
+    // 设备状态按序列号区分眼镜和戒指：先拿到眼镜的 sn，其他 sn 视为 R1 戒指
+    try {
+      const info = await this.bridge.getDeviceInfo()
+      if (info?.sn && String(info.model).toLowerCase() !== 'ring1') this.glassesSn = info.sn
+    } catch { /* 老版本宿主 */ }
     this.bridge.onDeviceStatusChanged((s) => {
-      this.glasses = {
-        connected: s.connectType === DeviceConnectType.Connected,
-        battery: s.batteryLevel,
-        wearing: s.isWearing,
+      const connected = s.connectType === DeviceConnectType.Connected
+      const isRing = !!s.sn && !!this.glassesSn && s.sn !== this.glassesSn
+      if (isRing) {
+        this.ring = { connected, battery: s.batteryLevel, charging: s.isCharging }
+      } else {
+        if (!this.glassesSn && s.sn) this.glassesSn = s.sn
+        this.glasses = { connected, battery: s.batteryLevel, wearing: s.isWearing, charging: s.isCharging }
       }
-      if (s.batteryLevel !== undefined && s.batteryLevel <= 10) this.toast(`眼镜电量低 ${s.batteryLevel}%`)
+      const who = isRing ? '戒指' : '眼镜'
+      if (s.batteryLevel !== undefined && s.batteryLevel <= 10 && !s.isCharging && !this.lowBatteryWarned.has(who)) {
+        this.lowBatteryWarned.add(who)
+        this.toast(`${who}电量低 ${s.batteryLevel}%`)
+      } else if ((s.batteryLevel ?? 100) > 20) this.lowBatteryWarned.delete(who)
       this.changed()
     })
     this.loc.onFix((f) => this.onFix(f))
@@ -868,6 +884,7 @@ export class HudApp {
       route: this.route,
       trip: this.trip.snapshot(),
       glasses: this.glasses,
+      ring: this.ring,
       weather: this.weather,
       place: this.place,
       toast,

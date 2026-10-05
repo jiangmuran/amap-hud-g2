@@ -418,9 +418,11 @@ export class PhoneUI {
     const src = { host: 'GPS', browser: '浏览器定位', sim: '模拟定位', none: '无定位' }[app.model().locationSource] ?? '无定位'
     const glass = this.mock
       ? '<span class="dot warn"></span>浏览器预览'
-      : `<span class="dot ${g.connected ? 'on' : ''}"></span>${g.connected ? `眼镜已连接${g.battery !== undefined ? ` · ${g.battery}%` : ''}` : '眼镜未连接'}`
+      : `<span class="dot ${g.connected ? 'on' : ''}"></span>${g.connected ? `眼镜已连接${g.battery !== undefined ? ` · ${g.battery}%${g.charging ? ' 充电中' : ''}` : ''}` : '眼镜未连接'}`
+    const r = app.ring
+    const ringTxt = r?.battery !== undefined ? `<span>·</span><span>戒指 ${r.battery}%${r.charging ? ' 充电中' : ''}</span>` : ''
     const fix = app.loc.last
-    this.root.querySelector('#subtitle')!.innerHTML = `${glass}<span>·</span><span>${src}${fix ? ` ±${Math.round(fix.accuracy)}m` : ''}</span>`
+    this.root.querySelector('#subtitle')!.innerHTML = `${glass}${ringTxt}<span>·</span><span>${src}${fix ? ` ±${Math.round(fix.accuracy)}m` : ''}</span>`
 
     const banner = this.root.querySelector('#banner')!
     let bannerHtml = ''

@@ -1,5 +1,5 @@
 import type { Poi, ReGeo, Weather } from '../amap/api'
-import type { GlassesStatus } from '../glasses/bridge'
+import type { GlassesStatus, RingStatus } from '../glasses/bridge'
 import type { Place } from '../storage'
 import type { Route } from '../nav/route'
 import type { Fix, NavState } from '../nav/tracker'
@@ -73,6 +73,7 @@ export interface HudModel {
   route?: Route
   trip: TripSnapshot
   glasses: GlassesStatus
+  ring?: RingStatus
   weather?: Weather
   place?: ReGeo
   toast?: string

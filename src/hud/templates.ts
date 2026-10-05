@@ -29,17 +29,46 @@ const MANEUVER_GLYPH: Record<Maneuver, string> = {
   'uturn-left': '↓', 'uturn-right': '↓', roundabout: '○', arrive: '●',
 }
 
-function pageDots(m: HudModel): string {
+function pageDots(m: HudModel, label = true): string {
   let s = ''
   for (let i = 0; i < m.viewCount; i++) s += i === m.viewIndex ? '●' : '○'
-  return `${s}  ${VIEW_LABEL[m.view === 'focus' ? 'nav' : m.view]}`
+  return label ? `${s}  ${VIEW_LABEL[m.view === 'focus' ? 'nav' : m.view]}` : s
 }
 
-function statusLine(m: HudModel, extra?: string): string {
+/** 估算原生字体下的文本宽度（中文约 19px、ASCII 约 10px） */
+function textWidth(s: string): number {
+  let w = 0
+  for (const ch of s) w += /[\u0000-\u00ff]/.test(ch) ? 10 : 19
+  return w
+}
+
+/** 眼镜与戒指电量：「眼镜 86%  戒指 72%」，充电中加 ↑ */
+export function batteryText(m: HudModel, compact = false): string {
+  const parts: string[] = []
+  const g = compact ? '眼' : '眼镜 '
+  const r = compact ? '戒' : '戒指 '
+  if (m.glasses.battery !== undefined) parts.push(`${g}${m.glasses.battery}%${m.glasses.charging ? '↑' : ''}`)
+  if (m.ring?.battery !== undefined) parts.push(`${r}${m.ring.battery}%${m.ring.charging ? '↑' : ''}`)
+  return parts.join(compact ? ' ' : '  ')
+}
+
+/**
+ * 底栏（一行）：时钟 · 附加信息 · 电量 · 页码。放不下时依次去掉页码标签、附加信息，电量始终保留。
+ */
+function statusLine(m: HudModel, extra = '', withBattery = true, width = 556): string {
   if (m.toast) return `※ ${m.toast}`
-  // extra 优先于电量（底栏只有一行；电量过低时另有提示）
-  const mid = extra ?? (m.glasses.battery !== undefined ? `  ·  眼镜 ${m.glasses.battery}%` : '')
-  return `${fmtClock(m.now)}${mid}     ${pageDots(m)}`
+  const build = (ex: string, batt: string, label: boolean) =>
+    [fmtClock(m.now) + (ex ? `  ·  ${ex}` : ''), batt].filter(Boolean).join('  ·  ') + `    ${pageDots(m, label)}`
+  const full = withBattery ? batteryText(m) : ''
+  const compact = withBattery ? batteryText(m, true) : ''
+  const tries: [string, string, boolean][] = [
+    [extra, full, true], [extra, compact, true], [extra, compact, false], ['', compact, false],
+  ]
+  for (const [ex, b, label] of tries) {
+    const s = build(ex, b, label)
+    if (textWidth(s) <= width) return s
+  }
+  return build('', compact, false)
 }
 
 function bar(p: number, n = 22): string {
@@ -281,7 +310,7 @@ function navFrame(m: HudModel): TemplateFrame {
     ? `然后  ${MANEUVER_GLYPH[nav.thenManeuver]} ${MANEUVER_LABEL[nav.thenManeuver]} · ${fmtDistStr(nav.thenDistance ?? 0)}`
     : ' '
   const eta = fmtClock(new Date(m.now.getTime() + nav.etaSec * 1000))
-  const arrowKey = `${nav.maneuver}|${focus}`
+  const arrowKey = `${nav.maneuver}|${focus}|${route.mode}`
   return {
     texts: {
       main: `${fmtDistStr(nav.distToManeuver)}  ${act}\n${road ? '进入 ' + road : '沿当前道路'}`,
@@ -290,12 +319,20 @@ function navFrame(m: HudModel): TemplateFrame {
       c0: focus ? ' ' : `剩余\n${fmtDistStr(nav.remaining)}`,
       c1: focus ? ' ' : `用时\n${fmtDurationZh(nav.etaSec)}`,
       c2: focus ? ' ' : `到达\n${eta}`,
-      status: statusLine(m, `  ·  ${MODE_LABEL[route.mode]} ${fmtSpeed(m.fix?.speed ?? NaN)} km/h${m.simulated ? '  ·  模拟' : ''}`),
+      status: statusLine(m, `${fmtSpeed(m.fix?.speed ?? NaN)} km/h`),
     },
     images: {
       arrow: img('arrow', 136, 136, arrowKey, (ctx) => {
         brackets(ctx, 2, 2, 132, 132, 16, 9)
-        maneuverIcon(ctx, nav.maneuver, 68, 70, focus ? 70 : 104)
+        maneuverIcon(ctx, nav.maneuver, 68, focus ? 70 : 62, focus ? 70 : 92)
+        if (!focus) {
+          // 出行方式标签（只在方式变化时随箭头图重发）
+          ctx.fillStyle = L(9)
+          ctx.font = '600 15px "PingFang SC", "Noto Sans CJK SC", sans-serif'
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(MODE_LABEL[route.mode], 68, 120)
+        }
       }),
     },
   }
@@ -507,7 +544,7 @@ function telemetryFrame(m: HudModel): TemplateFrame {
   cells.forEach(([k, v], i) => (texts[`c${i}`] = `${k}\n${v}`))
   const foot = [`海拔 ${alt}`, `爬升 ${Math.round(t.climb)} m`, m.fix ? `GPS ±${Math.round(m.fix.accuracy / 5) * 5} m` : 'GPS --', m.weather ? `${m.weather.temperature}°C ${m.weather.text}` : '']
     .filter(Boolean).join('  ·  ')
-  texts.status = `${foot}\n\n${statusLine(m)}`
+  texts.status = `${foot}\n${batteryText(m) || ' '}\n${statusLine(m, '', false)}`
   return { texts, images: {} }
 }
 

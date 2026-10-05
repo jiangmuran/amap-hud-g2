@@ -192,6 +192,19 @@ try {
     const out = JSON.stringify(await call(m, p2, { params: { package_id: PKG } }), null, 1)
     console.log(process.env.FULL ? out : out.slice(0, 3000))
   }
+  else if (cmd === 'cancel-review') {
+    console.log('撤回审核：', JSON.stringify(await call('POST', '/api/v1/publish-reviews/cancel-review', { json: {}, params: { package_id: PKG } })))
+  }
+  else if (cmd === 'submit') {
+    // 用最新版本提交审核：node scripts/hub-upload.mjs submit [版本号]
+    const want = process.argv[3] || app.version
+    const vs = await get('/api/v1/versions/list-private', { package_id: PKG, page: 1, page_size: 50 })
+    const v = (vs?.list ?? []).find((x) => x.version === want)
+    if (!v) throw new Error(`找不到版本 ${want}`)
+    console.log('提交审核：', want, JSON.stringify(await call('POST', '/api/v1/publish-reviews/submit', { json: { version_id: v.id }, params: { package_id: PKG } })))
+    const st = await get('/api/v1/apps/store-listing-summary', { package_id: PKG })
+    console.log('审核中的版本：', st?.review_version?.version, '状态', st?.review?.status)
+  }
   else if (cmd === 'covers') {
     const cfg = await get('/api/v1/misc/covers_config')
     for (const g of cfg?.list ?? cfg ?? []) for (const c of g.categories ?? []) for (const im of c.images ?? []) console.log(im.original, im.styled)

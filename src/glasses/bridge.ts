@@ -7,6 +7,7 @@ import {
   type AppLocation,
   type AppLocationOptions,
   type CreateStartUpPageContainer,
+  type DeviceInfo,
   type DeviceStatus,
   type EvenHubEvent,
   type ImageRawDataUpdate,
@@ -23,6 +24,7 @@ export interface HubBridge {
   shutDownPageContainer(mode?: number): Promise<boolean>
   onEvenHubEvent(cb: (e: EvenHubEvent) => void): () => void
   onDeviceStatusChanged(cb: (s: DeviceStatus) => void): () => void
+  getDeviceInfo(): Promise<DeviceInfo | null>
   startAppLocationUpdates(o?: AppLocationOptions): Promise<boolean>
   stopAppLocationUpdates(): Promise<boolean>
   getAppLocation(o?: AppLocationOptions): Promise<AppLocation | null>
@@ -35,6 +37,14 @@ export interface GlassesStatus {
   connected: boolean
   battery?: number
   wearing?: boolean
+  charging?: boolean
+}
+
+/** R1 戒指状态（SDK 只提供电量/连接/充电，不提供健康数据） */
+export interface RingStatus {
+  connected: boolean
+  battery?: number
+  charging?: boolean
 }
 
 function wrapReal(b: any): HubBridge {
@@ -47,6 +57,7 @@ function wrapReal(b: any): HubBridge {
     shutDownPageContainer: (m) => b.shutDownPageContainer(m),
     onEvenHubEvent: (cb) => b.onEvenHubEvent(cb),
     onDeviceStatusChanged: (cb) => b.onDeviceStatusChanged(cb),
+    getDeviceInfo: () => b.getDeviceInfo(),
     startAppLocationUpdates: (o) => b.startAppLocationUpdates(o),
     stopAppLocationUpdates: () => b.stopAppLocationUpdates(),
     getAppLocation: (o) => b.getAppLocation(o),
@@ -90,11 +101,15 @@ export class MockBridge implements HubBridge {
   }
   onDeviceStatusChanged(cb: (s: DeviceStatus) => void): () => void {
     this.statusCbs.add(cb)
-    setTimeout(() => cb({ connectType: DeviceConnectType.Connected, batteryLevel: 86, isWearing: true } as DeviceStatus), 300)
+    setTimeout(() => cb({ sn: 'G2-MOCK', connectType: DeviceConnectType.Connected, batteryLevel: 86, isWearing: true } as DeviceStatus), 300)
+    setTimeout(() => cb({ sn: 'R1-MOCK', connectType: DeviceConnectType.Connected, batteryLevel: 72 } as DeviceStatus), 500)
     return () => this.statusCbs.delete(cb)
   }
   async startAppLocationUpdates(): Promise<boolean> {
     return false
+  }
+  async getDeviceInfo(): Promise<DeviceInfo | null> {
+    return { model: 'g2', sn: 'G2-MOCK' } as unknown as DeviceInfo
   }
   async stopAppLocationUpdates(): Promise<boolean> {
     return true
