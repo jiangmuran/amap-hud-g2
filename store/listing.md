@@ -82,6 +82,8 @@ Requires your own free AMap (高德开放平台) Web Service key, entered in the
 
 ## 给审核员的备注（Review notes）
 
+> 门户的提交审核接口只有 `version_id`，**没有审核备注字段**。测试 Key 需要通过其他渠道提供给审核方（例如联系 Even 开发者支持）。以下内容留作沟通时使用。
+
 **中文**
 本应用需要高德开放平台「Web服务」Key 才能搜索和规划路线。审核用测试 Key：`<在此填写测试 Key，审核结束后可在高德控制台删除>`。
 测试步骤：

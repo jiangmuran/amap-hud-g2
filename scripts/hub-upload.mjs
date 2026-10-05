@@ -14,6 +14,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 const BASE = process.env.EVENHUB_BASE_URL || 'https://hub.evenrealities.com'
+const ASSETS = 'https://cdn-pub.evenhub.evenrealities.com'
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const CRED = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'evenhub', 'credentials.yaml')
 const app = JSON.parse(fs.readFileSync(path.join(ROOT, 'app.json'), 'utf8'))
@@ -24,10 +25,19 @@ const EHPK = path.join(ROOT, process.env.EHPK || 'realmapcn.ehpk')
 // ── 凭证（只读写官方 CLI 的文件，不额外保存） ─────────────────────
 function readCred() {
   if (!fs.existsSync(CRED)) throw new Error(`未找到 ${CRED}，请先运行 npx evenhub login`)
+  // 简单 YAML：支持 `key: value`、带引号的值，以及 CLI 写出的折叠块 `key: >-` + 缩进续行
   const out = {}
-  for (const line of fs.readFileSync(CRED, 'utf8').split('\n')) {
-    const m = line.match(/^(\w+):\s*['"]?([^'"]*)['"]?\s*$/)
-    if (m) out[m[1]] = m[2]
+  const lines = fs.readFileSync(CRED, 'utf8').split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(\w+):\s*(.*)$/)
+    if (!m) continue
+    let v = m[2].trim()
+    if (v === '>-' || v === '>' || v === '|' || v === '|-') {
+      const parts = []
+      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) parts.push(lines[++i].trim())
+      v = parts.join(v.startsWith('>') ? '' : '\n')
+    } else v = v.replace(/^['"]|['"]$/g, '')
+    out[m[1]] = /^\d+$/.test(v) ? Number(v) : v
   }
   return out
 }
@@ -62,7 +72,7 @@ async function call(method, p, { params, json, form } = {}) {
   const text = await r.text()
   let j
   try { j = JSON.parse(text) } catch { throw new Error(`${method} ${p} → HTTP ${r.status} ${text.slice(0, 200)}`) }
-  if (j.code !== 0) throw new Error(`${method} ${p} → ${j.code} ${j.message}`)
+  if (j.code !== 0) throw new Error(`${method} ${p} → ${j.code} ${j.message}${j.data ? " " + JSON.stringify(j.data).slice(0, 300) : ""}${process.env.DEBUG ? " " + text.slice(0, 500) : ""}`)
   return j.data
 }
 const get = (p, params) => call('GET', p, { params })
@@ -115,7 +125,10 @@ async function pickCover() {
 
 async function updateListing() {
   const cover = await pickCover()
-  const f = new FormData()
+  // ONLY=name,tags 只提交指定字段（排查哪个字段不合规时用）
+  const only = process.env.ONLY ? new Set(process.env.ONLY.split(',')) : null
+  const raw = new FormData()
+  const f = { append: (k, ...v) => { if (!only || only.has(k)) raw.append(k, ...v) } }
   f.append('name', listing.name)
   f.append('tagline', listing.tagline)
   f.append('description', listing.description)
@@ -125,10 +138,22 @@ async function updateListing() {
   f.append('icon', fileBlob(listing.icon, 'image/png'), 'icon.png')
   f.append('icon_data', JSON.stringify(listing.icon_data))
   for (const s of listing.screenshots) f.append('foreground', fileBlob(s, 'image/png'), path.basename(s))
-  if (cover?.original) f.append('background', cover.original)
-  if (cover?.styled) f.append('background_styled', cover.styled)
-  if (listing.privacy_url) f.append('privacy', listing.privacy_url)
-  const r = await postForm('/api/v1/apps/update', f, { package_id: PKG })
+  if (cover?.original) {
+    // 前端做法：从资源 CDN 下载选中的预设封面，再作为文件上传
+    const res = await fetch(`${ASSETS}/${cover.original}`)
+    if (!res.ok) throw new Error(`下载封面失败 HTTP ${res.status}`)
+    const blob = await res.blob()
+    f.append('background', new Blob([await blob.arrayBuffer()], { type: blob.type || 'image/png' }), 'background.webp')
+  }
+  if (cover?.styled) {
+    // 模糊背景同样要以文件形式上传（直接用预设封面配套的 styled 图）
+    const res = await fetch(`${ASSETS}/${cover.styled}`)
+    if (!res.ok) throw new Error(`下载模糊封面失败 HTTP ${res.status}`)
+    f.append('background_styled', new Blob([await res.arrayBuffer()], { type: 'image/webp' }), 'background_styled.webp')
+  }
+  // 隐私协议是门户表单生成的 JSON（含联系电话、地址等必填项），提供 PRIVACY_JSON 文件时才提交
+  if (process.env.PRIVACY_JSON) f.append('privacy', fs.readFileSync(process.env.PRIVACY_JSON, 'utf8'))
+  const r = await postForm('/api/v1/apps/update', raw, { package_id: PKG })
   console.log('上架资料已更新：', JSON.stringify(r).slice(0, 300))
 }
 
@@ -148,6 +173,28 @@ const cmd = process.argv[2] || 'status'
 try {
   if (cmd === 'status') await status()
   else if (cmd === 'upload') { await uploadEhpk(await findApp()); await updateListing(); await status() }
+  else if (cmd === 'cover-info') {
+    const cfg = await get('/api/v1/misc/covers_config')
+    console.log(JSON.stringify(cfg).slice(0, 1200))
+  }
+  else if (cmd === 'bgtest') {
+    // 排查封面上传格式：BGFILE=本地图片 BGNAME=文件名 BGTYPE=MIME
+    const styled = process.env.BGSTYLED
+    const f = new FormData()
+    f.append('background', new Blob([fs.readFileSync(process.env.BGFILE)], { type: process.env.BGTYPE }), process.env.BGNAME)
+    if (styled) f.append('background_styled', styled)
+    if (process.env.BGSTYLEDFILE) f.append('background_styled', new Blob([fs.readFileSync(process.env.BGSTYLEDFILE)], { type: 'image/webp' }), 'background_styled.webp')
+    console.log('结果：', JSON.stringify(await postForm('/api/v1/apps/update', f, { package_id: PKG })))
+  }
+  else if (cmd === 'raw') {
+    // node scripts/hub-upload.mjs raw GET /api/v1/apps/listing-draft
+    const [m, p2] = process.argv.slice(3)
+    console.log(JSON.stringify(await call(m, p2, { params: { package_id: PKG } }), null, 1).slice(0, 3000))
+  }
+  else if (cmd === 'covers') {
+    const cfg = await get('/api/v1/misc/covers_config')
+    for (const g of cfg?.list ?? cfg ?? []) for (const c of g.categories ?? []) for (const im of c.images ?? []) console.log(im.original, im.styled)
+  }
   else if (cmd === 'listing') { await updateListing(); await status() }
   else console.log('用法：status | upload | listing')
 } catch (e) {
