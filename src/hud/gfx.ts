@@ -271,20 +271,49 @@ export function maneuverIcon(ctx: Ctx, kind: Maneuver, cx: number, cy: number, s
   ctx.restore()
 }
 
-/** 用户位置箭头（V 形 chevron） */
+/**
+ * 箭头形状（局部坐标，尖端朝上，尺寸归一化为 1）。
+ * 关键约束：尖端到旋转中心的距离必须明显大于两个翼尖，否则小尺寸下翼尖
+ * 会比尖端更显眼，看起来像指向别的方向。这里尖端 1.20、翼尖约 0.72。
+ * 旋转中心取在图形质心附近（原点），朝不同方向时位置基本不漂移。
+ */
+const ARROW_SHAPE: [number, number][] = [
+  [0, -1.2],
+  [0.56, 0.46],
+  [0, 0.18],
+  [-0.56, 0.46],
+]
+
+function arrowPath(ctx: Ctx, size: number): void {
+  ctx.beginPath()
+  ARROW_SHAPE.forEach(([x, y], i) => (i ? ctx.lineTo(x * size, y * size) : ctx.moveTo(x * size, y * size)))
+  ctx.closePath()
+}
+
+/** 地图上的用户位置标记：带黑色外描边，便于压在路线上时分辨（描边在填充之下，不侵蚀形状） */
 export function chevron(ctx: Ctx, x: number, y: number, size: number, rotDeg: number, level = 15): void {
   ctx.save()
   ctx.translate(x, y)
   ctx.rotate((rotDeg * Math.PI) / 180)
-  ctx.beginPath()
-  ctx.moveTo(0, -size)
-  ctx.lineTo(size * 0.72, size * 0.75)
-  ctx.lineTo(0, size * 0.35)
-  ctx.lineTo(-size * 0.72, size * 0.75)
-  ctx.closePath()
-  ctx.lineWidth = 4
+  arrowPath(ctx, size)
+  ctx.lineJoin = 'round'
+  ctx.lineWidth = Math.max(2, size * 0.3)
   ctx.strokeStyle = '#000'
   ctx.stroke()
+  ctx.fillStyle = L(level)
+  ctx.fill()
+  ctx.restore()
+}
+
+/**
+ * 方向指示箭头（列表、详情卡里用）：实心、无描边。
+ * rotDeg 为相对当前朝向的角度，0 = 正前方（向上），顺时针为正。
+ */
+export function pointer(ctx: Ctx, x: number, y: number, size: number, rotDeg: number, level = 15): void {
+  ctx.save()
+  ctx.translate(x, y)
+  ctx.rotate((rotDeg * Math.PI) / 180)
+  arrowPath(ctx, size)
   ctx.fillStyle = L(level)
   ctx.fill()
   ctx.restore()

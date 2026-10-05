@@ -112,6 +112,7 @@ npm install
 npm run dev            # http://<局域网IP>:5173（手机扫码时加 HMR_HOST=<IP>）
 npm run qr             # 生成二维码，用 Even App 扫码在眼镜上加载
 npm test               # 单元测试：坐标转换、路线解析、路线跟踪、偏航、到达、POI 字段
+npm run check:arrows   # 渲染回归：方向箭头在各尺寸/角度下视觉指向正确（需先 npm run dev）
 npm run pack           # 构建并打包 amaphud.ehpk
 ```
 

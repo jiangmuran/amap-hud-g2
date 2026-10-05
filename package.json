@@ -1,7 +1,7 @@
 {
   "name": "amap-hud",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
@@ -11,7 +11,8 @@
     "sim": "evenhub-simulator http://localhost:5173 --automation-port 9898",
     "pack": "npm run build && evenhub pack app.json dist -o amaphud.ehpk",
     "test": "tsx --test tests/*.test.ts",
-    "preview:lan": "scripts/lan-preview.sh start"
+    "preview:lan": "scripts/lan-preview.sh start",
+    "check:arrows": "node scripts/check-arrows.mjs"
   },
   "dependencies": {
     "@evenrealities/even_hub_sdk": "^0.0.16",
@@ -22,6 +23,7 @@
     "@evenrealities/evenhub-cli": "^0.1.14",
     "@evenrealities/evenhub-simulator": "^0.9.5",
     "@types/node": "^26.6.4",
+    "playwright-core": "1.56",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vite": "^8.3.2"

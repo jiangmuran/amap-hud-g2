@@ -5,7 +5,7 @@ import { bearing, compass8, haversine, LocalProjector, angleDiff, normDeg, type 
 import { MANEUVER_LABEL, MODE_LABEL, type Route } from '../nav/route'
 import { SCREEN_H, SCREEN_W } from '../glasses/display'
 import {
-  battery, brackets, chamferRect, chevron, clear, diamond, ellipsize, font, hatch, L, line, maneuverIcon,
+  battery, brackets, chamferRect, chevron, clear, pointer, diamond, ellipsize, font, hatch, L, line, maneuverIcon,
   measure, numUnit, reticle, segBar, signal, text, type Ctx,
 } from './gfx'
 import { fmtClock, fmtDist, fmtDistStr, fmtDuration, fmtElapsed, fmtSpeed, kmh } from './format'
@@ -607,7 +607,7 @@ function drawRadar(ctx: Ctx, m: HudModel): void {
     text(ctx, p.name, 320, y + 23, { font: font.cjk(16, 700), level: 15, maxWidth: 170 })
     if (me) {
       const b = angleDiff(heading, bearing(me, p.location))
-      chevron(ctx, 556, y + 17, 7, b, 12)
+      pointer(ctx, 558, y + 18, 9, b, 13)
     }
     text(ctx, fmtDistStr(d), 544, y + 23, { font: font.num(13), level: 12, align: 'right' })
     const meta = poiMeta(p)
@@ -672,7 +672,7 @@ function drawCruise(ctx: Ctx, m: HudModel): void {
   const start = m.trip.start
   if (m.fix && start && haversine(m.fix.p, start) > 30) {
     const b = angleDiff(heading, bearing(m.fix.p, start))
-    chevron(ctx, 34, 258, 10, b, 13)
+    pointer(ctx, 34, 259, 10, b, 13)
     text(ctx, `起点 ${fmtDistStr(haversine(m.fix.p, start))}`, 54, 264, { font: font.cjk(15), level: 12 })
   }
   text(ctx, '单击后长按：菜单  ·  手机端选择目的地', 562, 264, { font: font.cjk(12), level: 6, align: 'right' })
@@ -794,7 +794,7 @@ function drawGo(ctx: Ctx, m: HudModel): void {
       const d = haversine(me, q.place.location)
       const b = angleDiff(heading, bearing(me, q.place.location))
       text(ctx, fmtDistStr(d), 520, y + 28, { font: font.num(15), level: 13, align: 'right' })
-      chevron(ctx, 548, y + 22, 8, b, 13)
+      pointer(ctx, 550, y + 23, 9, b, 14)
     }
     if (i < items.length - 1) line(ctx, 66, y + 44, 566, y + 44, 3)
   })
@@ -860,7 +860,7 @@ function drawPoiDetail(ctx: Ctx, m: HudModel): void {
       const r = ((a - heading) * Math.PI) / 180
       line(ctx, cxr + Math.sin(r) * 48, cyr - Math.cos(r) * 48, cxr + Math.sin(r) * 54, cyr - Math.cos(r) * 54, a === 0 ? 15 : 7, a === 0 ? 2.5 : 1.5)
     }
-    chevron(ctx, cxr, cyr, 26, b)
+    pointer(ctx, cxr, cyr, 28, b)
     const dd = fmtDist(d)
     const dir = `${compass8(bearing(me, p.entrance ?? p.location), true)}方`
     const w = measure(ctx, dd.v, font.num(26)) + measure(ctx, dd.u, font.label(11, 700)) + 4
