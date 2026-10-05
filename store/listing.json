@@ -1,7 +1,7 @@
 {
   "name": "RealMapCN",
   "tagline": "适用于中国大陆的开源全功能地图",
-  "description": "把导航搬进 G2 的视野：一套为单色微型显示屏设计的科幻风 HUD。\n\n【导航】\n· 简洁的导航主页：转向箭头、距离与即将进入的道路、\"然后…\"预告、进度、剩余距离与到达时间，只更新变化的文字，响应迅速\n· 街道地图页：大幅街道地图与位置朝向，单击放大、长按缩小\n· 全局路线总览、路书、偏航自动重算、到达总结\n· 步行、骑行、电动车、驾车，可在眼镜上随时切换并自动重新规划\n\n【眼镜上直接选目的地】\n「前往」页列出家、公司、收藏地点和最近目的地，用戒指或镜腿选择即可出发，无需掏手机。\n\n【周边筛选】\n地铁站、超市、美食等 10 类，显示评分、人均和楼层；详情卡含营业时间、方向与距离，单击直接导航到入口。\n\n【更多】\n· 首页游戏风格街道小地图：车头朝上、罗盘刻度、比例尺\n· 仪表：速度、行程、用时、均速、最高速度、航向、海拔、爬升\n· 专注模式：远离路口时几乎熄屏，接近转向自动亮起\n· 页面结构只建一次，之后只发送变化的文字，操作跟手\n· 导航时可保持手机亮屏；应用被系统关闭后重新打开自动恢复导航\n\n完全开源，欢迎在 GitHub 提交问题与建议。\n开源地址：https://github.com/jiangmuran/amap-hud-g2\n\n使用前需在手机端设置中填写高德开放平台「Web服务」Key（可免费申请）。地图与地点数据来自高德地图。\n\nSci-fi navigation HUD for G2: turn-by-turn guidance, route overview and roadbook, nearby places with ratings and floors, and destinations you can pick right on the glasses. Requires your own free AMap Web Service key. Map data: AMap. Open source: https://github.com/jiangmuran/amap-hud-g2",
+  "description": "把导航搬进 G2 的视野：一套为单色微型显示屏设计的科幻风 HUD。\n\n【导航】\n· 简洁的导航主页：转向箭头、距离与即将进入的道路、\"然后…\"预告、进度、剩余距离与到达时间，只更新变化的文字，响应迅速\n· 街道地图页：大幅街道地图与位置朝向，单击放大、长按缩小\n· 全局路线总览、路书、偏航自动重算、到达总结\n· 步行、骑行、电动车、驾车，可在眼镜上随时切换并自动重新规划\n\n【眼镜上直接选目的地】\n「前往」页列出家、公司、收藏地点和最近目的地，用戒指或镜腿选择即可出发，无需掏手机。\n\n【周边筛选】\n地铁站、超市、美食等 10 类，显示评分、人均和楼层；详情卡含营业时间、方向与距离，单击直接导航到入口。\n\n【更多】\n· 首页游戏风格街道小地图：车头朝上、罗盘刻度、比例尺；静止时使用手机指南针显示朝向\n· 仪表：速度、行程、用时、均速、最高速度、航向、海拔、爬升\n· 显示眼镜与 R1 戒指电量，低电量提醒\n· 专注模式：远离路口时几乎熄屏，接近转向自动亮起\n· 页面结构只建一次，之后只发送变化的文字，操作跟手\n· 导航时可保持手机亮屏；应用被系统关闭后重新打开自动恢复导航\n\n完全开源，欢迎在 GitHub 提交问题与建议。\n开源地址：https://github.com/jiangmuran/amap-hud-g2\n\n使用前需在手机端设置中填写高德开放平台「Web服务」Key（可免费申请）。地图与地点数据来自高德地图。\n\nSci-fi navigation HUD for G2: turn-by-turn guidance, route overview and roadbook, nearby places with ratings and floors, and destinations you can pick right on the glasses. Requires your own free AMap Web Service key. Map data: AMap. Open source: https://github.com/jiangmuran/amap-hud-g2",
   "category": [
     "Travel"
   ],
@@ -16,13 +16,13 @@
   "privacy_url": "https://github.com/jiangmuran/amap-hud-g2/blob/main/docs/PRIVACY.md",
   "screenshots": [
     "store/screenshots/01-nav.png",
-    "store/screenshots/07-go.png",
+    "store/screenshots/02-map.png",
+    "store/screenshots/03-cruise.png",
+    "store/screenshots/04-go.png",
     "store/screenshots/05-radar.png",
     "store/screenshots/06-poi.png",
-    "store/screenshots/02-overview.png",
-    "store/screenshots/03-roadbook.png",
-    "store/screenshots/04-telemetry.png",
-    "store/screenshots/08-cruise.png"
+    "store/screenshots/07-roadbook.png",
+    "store/screenshots/08-telemetry.png"
   ],
   "icon": "store/icon-24.png",
   "icon_data": [
@@ -51,5 +51,5 @@
     15728655,
     0
   ],
-  "changelog": "导航与巡航时显示眼镜和 R1 戒指电量（充电中标 ↑），低电量提醒；导航页箭头卡片显示当前出行方式。"
+  "changelog": "全部页面改为模板页，只发送变化的文字，操作更跟手；首页街道小地图与可缩放的街道地图页；静止时用手机指南针显示朝向；可在眼镜上切换出行方式；显示眼镜与戒指电量；导航时可保持手机亮屏，被系统关闭后自动恢复导航。"
 }

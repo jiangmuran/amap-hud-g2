@@ -174,6 +174,34 @@ function drawRouteOn(ctx: Ctx, m: HudModel, me: LngLat, cx: number, cy: number, 
   reticle(ctx, dx, dy, 6, 15)
 }
 
+/** 位置标记：朝向已知画箭头，未知画圆点（避免指向一个假方向） */
+function posMarker(ctx: Ctx, m: HudModel, x: number, y: number, size: number, rot: number): void {
+  if (m.headingSource === 'none') {
+    ctx.fillStyle = '#000'
+    ctx.beginPath()
+    ctx.arc(x, y, size * 0.8, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.strokeStyle = L(15)
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.arc(x, y, size * 0.7, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.fillStyle = L(15)
+    ctx.beginPath()
+    ctx.arc(x, y, size * 0.32, 0, Math.PI * 2)
+    ctx.fill()
+  } else chevron(ctx, x, y, size, rot, 15)
+}
+
+const HEADING_SRC: Record<HudModel['headingSource'], string> = { gps: 'GPS', phone: '手机', route: '路线', none: '未知' }
+
+/** 「东北 030° · 手机」 */
+function headingText(m: HudModel): string {
+  if (m.headingSource === 'none') return '方向未知'
+  const h = displayHeading(m)
+  return `${compass8(h, true)} ${String(Math.round(normDeg(h) / 5) * 5).padStart(3, '0')}°  ·  ${HEADING_SRC[m.headingSource]}`
+}
+
 function scaleText(meters: number): string {
   return meters >= 1000 ? `${meters / 1000}KM` : `${meters}M`
 }
@@ -355,8 +383,8 @@ function cruiseFrame(m: HudModel): TemplateFrame {
     texts: {
       title: '巡航  ·  单击后长按打开菜单',
       place,
-      heading: `航向  ${compass8(heading, true)} ${String(Math.round(normDeg(heading) / 5) * 5).padStart(3, '0')}°`,
-      c0: `速度\n${fmtSpeed(m.fix?.speed ?? NaN)} km/h`,
+      heading: `航向  ${headingText(m)}`,
+      c0: m.fix && Number.isFinite(m.fix.speed) && m.fix.speed < 0.3 ? '速度\n静止' : `速度\n${fmtSpeed(m.fix?.speed ?? NaN)} km/h`,
       c1: m.weather ? `天气\n${m.weather.temperature}°C ${m.weather.text}` : `海拔\n${alt}`,
       c2: home !== ' '
         ? `起点\n${home.replace(' 起点 ', ' ')}`
@@ -380,7 +408,7 @@ function minimap(m: HudModel): HTMLCanvasElement {
   const bm = m.basemap
   const grid = 5 * mpp
   const pos = me ? `${Math.round((me[0] * 85000) / grid)},${Math.round((me[1] * 111000) / grid)}` : 'none'
-  const raw = `${pos}|${hq}|${Math.round(mpp * 2)}|${bm ? bm.center.join() + bm.zoom : 'nobm'}|${m.route?.createdAt ?? 0}`
+  const raw = `${pos}|${hq}|${m.headingSource === 'none'}|${Math.round(mpp * 2)}|${bm ? bm.center.join() + bm.zoom : 'nobm'}|${m.route?.createdAt ?? 0}`
   const key = gatedKey('minimap', raw, imageInterval(m, 3, 1500, 8000))
   return img('minimap', 136, 136, key, (ctx) => {
     const cx = 68, cy = 68, R = 64
@@ -429,7 +457,7 @@ function minimap(m: HudModel): HTMLCanvasElement {
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText('N', nx, ny + 1)
-    chevron(ctx, cx, cy, 9, 0, 15)
+    posMarker(ctx, m, cx, cy, 9, 0)
     // 比例尺（半径对应的距离）
     const radiusM = Math.round((R * mpp) / 10) * 10
     ctx.fillStyle = '#000'
@@ -457,7 +485,7 @@ function streetMapFrame(m: HudModel): TemplateFrame {
   const bm = m.mapBasemap && m.mapBasemap.zoom === zoom ? m.mapBasemap : null
   const grid = 8 * mpp
   const pos = me ? `${Math.round((me[0] * 85000) / grid)},${Math.round((me[1] * 111000) / grid)}` : 'none'
-  const raw = `${pos}|${Math.round(normDeg(heading) / 30)}|${zoom}|${bm ? bm.center.join() : 'nobm'}|${m.route?.createdAt ?? 0}|${Math.round((m.nav?.progress ?? 0) * 50)}`
+  const raw = `${pos}|${Math.round(normDeg(heading) / 30)}|${m.headingSource === 'none'}|${zoom}|${bm ? bm.center.join() : 'nobm'}|${m.route?.createdAt ?? 0}|${Math.round((m.nav?.progress ?? 0) * 50)}`
   // 缩放变化立即重画；其余按链路速度限流（至少 5 倍单张耗时，每次要发两张图）
   const key = gatedKey('streetmap', raw, imageInterval(m, 5, 3000, 15000), zoom !== smapZoomShown)
   if (key !== smapKey) {
@@ -481,7 +509,7 @@ function streetMapFrame(m: HudModel): TemplateFrame {
         ctx.arc(144, 144, accR, 0, Math.PI * 2)
         ctx.stroke()
       }
-      chevron(ctx, 144, 144, 11, heading, 15)
+      posMarker(ctx, m, 144, 144, 11, heading)
     }
     brackets(ctx, 2, 2, 284, 284, 16, 8)
     // 指北针
@@ -518,7 +546,7 @@ function streetMapFrame(m: HudModel): TemplateFrame {
       title: `街道地图  ${levelBar}`,
       place,
       info: [
-        `航向  ${compass8(heading, true)} ${Math.round(normDeg(heading) / 5) * 5}°`,
+        `航向  ${headingText(m)}`,
         `速度  ${fmtSpeed(m.fix?.speed ?? NaN)} km/h`,
         nav ? `剩余  ${fmtDistStr(nav.remaining)}` : (bm ? `范围  约 ${scaleText(Math.round((144 * mpp) / 50) * 50)}` : m.hasKey ? '街道加载中…' : '需要高德 Key 显示街道'),
       ].join('\n'),
@@ -538,7 +566,7 @@ function telemetryFrame(m: HudModel): TemplateFrame {
     ['用时', t.elapsedSec < 60 ? '不到 1 分钟' : fmtDurationZh(t.elapsedSec)],
     ['均速', `${fmtSpeed(t.avgSpeed)} km/h`],
     ['最高', `${fmtSpeed(t.maxSpeed)} km/h`],
-    ['航向', `${compass8(heading, true)} ${Math.round(normDeg(heading) / 5) * 5}°`],
+    ['航向', m.headingSource === 'none' ? '—' : `${compass8(heading, true)} ${Math.round(normDeg(heading) / 5) * 5}°`],
   ]
   const texts: Record<string, string> = {}
   cells.forEach(([k, v], i) => (texts[`c${i}`] = `${k}\n${v}`))

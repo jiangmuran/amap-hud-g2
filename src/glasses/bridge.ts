@@ -3,6 +3,7 @@
 
 import {
   DeviceConnectType,
+  ImuReportPace,
   waitForEvenAppBridge,
   type AppLocation,
   type AppLocationOptions,
@@ -25,6 +26,7 @@ export interface HubBridge {
   onEvenHubEvent(cb: (e: EvenHubEvent) => void): () => void
   onDeviceStatusChanged(cb: (s: DeviceStatus) => void): () => void
   getDeviceInfo(): Promise<DeviceInfo | null>
+  imuControl(open: boolean, pace?: ImuReportPace): Promise<boolean>
   startAppLocationUpdates(o?: AppLocationOptions): Promise<boolean>
   stopAppLocationUpdates(): Promise<boolean>
   getAppLocation(o?: AppLocationOptions): Promise<AppLocation | null>
@@ -58,6 +60,7 @@ function wrapReal(b: any): HubBridge {
     onEvenHubEvent: (cb) => b.onEvenHubEvent(cb),
     onDeviceStatusChanged: (cb) => b.onDeviceStatusChanged(cb),
     getDeviceInfo: () => b.getDeviceInfo(),
+    imuControl: (open, pace) => b.imuControl(open, pace),
     startAppLocationUpdates: (o) => b.startAppLocationUpdates(o),
     stopAppLocationUpdates: () => b.stopAppLocationUpdates(),
     getAppLocation: (o) => b.getAppLocation(o),
@@ -107,6 +110,9 @@ export class MockBridge implements HubBridge {
   }
   async startAppLocationUpdates(): Promise<boolean> {
     return false
+  }
+  async imuControl(): Promise<boolean> {
+    return true
   }
   async getDeviceInfo(): Promise<DeviceInfo | null> {
     return { model: 'g2', sn: 'G2-MOCK' } as unknown as DeviceInfo

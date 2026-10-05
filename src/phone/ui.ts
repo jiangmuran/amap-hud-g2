@@ -269,6 +269,13 @@ export class PhoneUI {
         }
         return
       case 'test-key': return void this.testKey()
+      case 'compass':
+        void this.app.compass.requestPermission().then((ok) => {
+          this.showToast(ok ? '指南针已启用' : '未获得指南针权限')
+          this.bannerHtml = '-'
+          this.render()
+        })
+        return
       case 'bench': return void this.runBench()
       case 'toggle': {
         const key = el.dataset.key as 'basemap' | 'headingUp' | 'focusMode'
@@ -428,6 +435,8 @@ export class PhoneUI {
     let bannerHtml = ''
     if (!app.api.hasKey()) {
       bannerHtml = `<div class="banner">${icon.key(20)}<div class="grow"><b>尚未设置高德 Key</b><br><span style="color:var(--label-2)">搜索与路线规划需要「Web服务」类型的 Key，点右侧去填写。</span></div><button class="link" data-act="settings">设置</button></div>`
+    } else if (app.compass.state === 'needs-permission' || app.compass.state === 'denied') {
+      bannerHtml = `<div class="banner">${icon.location(18)}<div class="grow"><b>启用手机指南针</b><br><span style="color:var(--label-2)">${app.compass.state === 'denied' ? '已被拒绝，可在系统设置中允许「动作与方向」后重试。' : '静止或慢走时，地图需要指南针才能显示朝向。'}</span></div><button class="link" data-act="compass">启用</button></div>`
     } else if (app.display.mode === 'text') {
       bannerHtml = `<div class="banner">${icon.glasses(20)}<div class="grow"><b>眼镜已切换到文本模式</b><br><span style="color:var(--label-2)">宿主图像通道异常（已知问题），重启应用可恢复图形界面。</span></div></div>`
     }
@@ -606,6 +615,7 @@ export class PhoneUI {
 
   private openSheet(kind: SheetKind): void {
     this.sheet = kind
+    void this.app.setImuProbe(kind === 'settings')
     const sheet = this.root.querySelector<HTMLElement>('#sheet')!
     const backdrop = this.root.querySelector<HTMLElement>('#backdrop')!
     sheet.hidden = false
@@ -622,6 +632,7 @@ export class PhoneUI {
     const backdrop = this.root.querySelector<HTMLElement>('#backdrop')!
     if (this.sheet === 'settings') this.commitSettingsInputs()
     this.sheet = null
+    void this.app.setImuProbe(false)
     sheet.classList.remove('show')
     backdrop.classList.remove('show')
     setTimeout(() => {
@@ -819,7 +830,7 @@ export class PhoneUI {
             <button class="cell" data-act="bench"><span class="link">眼镜传输测试</span><span class="grow"></span><span class="detail" id="bench-state" style="font-size:15px"></span></button>
             <div class="cell" id="bench-out" style="display:none;white-space:pre-wrap;font-family:var(--mono);font-size:13px;line-height:1.6"></div>
           </div>
-          <p class="section-footer">测试约需 20–60 秒，期间眼镜画面会闪动。把结果截图发给开发者，可以帮助定位卡顿。</p>
+          <p class="section-footer">测试约需 20–60 秒，期间眼镜画面会闪动。把结果截图发给开发者，可以帮助定位卡顿。<br>「眼镜 IMU」只在本页打开时采集：戴着眼镜左右转头、抬头低头，观察哪个数值在变，告诉开发者即可接入眼镜朝向。</p>
         </div>
       </div>`
   }
@@ -843,6 +854,9 @@ export class PhoneUI {
         ['图块发送', `${st.sends} 次 · 失败 ${st.failures}`],
         ['平均耗时', `${Math.round(st.avgSendMs)} ms / 图块`],
         ['图块编码', `${st.encoding === 'gray4' ? '4位灰度 PNG' : 'RGBA PNG'} · ${(st.lastTileBytes / 1024).toFixed(1)}KB`],
+        ['手机指南针', ({ unsupported: '不支持', 'needs-permission': '未授权', denied: '已拒绝', waiting: '等待数据', active: `${Math.round(this.app.compass.heading)}°` } as const)[this.app.compass.state]],
+        ['朝向来源', ({ gps: 'GPS 行进方向', phone: '手机指南针', route: '路线方向', none: '无' } as const)[this.app.headingSource]],
+        ['眼镜 IMU', this.app.imu && Date.now() - this.app.imu.t < 3000 ? `x ${this.app.imu.x.toFixed(2)}  y ${this.app.imu.y.toFixed(2)}  z ${this.app.imu.z.toFixed(2)}（${this.app.imu.count}）` : '无数据'],
         ['屏幕常亮', this.app.wake.supported ? (this.app.wake.active ? '已开启' : '未开启') : '不支持'],
         ['操作响应', st.inputLatencyMs ? `${Math.round(st.inputLatencyMs)} ms（最近一次）` : '—'],
         ['街道底图', this.app.basemap.lastError ?? (this.app.basemap.current ? `z${this.app.basemap.current.zoom} 已加载` : '未加载')],

@@ -89,6 +89,8 @@ export interface HudModel {
   /** 街道地图页：缩放级别、专用底图 */
   mapZoom: number
   mapBasemap?: Basemap | null
+  /** 朝向来源：GPS 行进方向 / 手机指南针 / 路线方向 / 无 */
+  headingSource: 'gps' | 'phone' | 'route' | 'none'
   /** 实测单张图片发送耗时（ms），用于自适应刷新间隔 */
   linkMs: number
   /** 默认出行方式（「前往」页发起导航时使用） */

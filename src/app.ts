@@ -9,6 +9,8 @@ import { createCanvas, GlassesDisplay, SCREEN_H, SCREEN_W, type MenuItem } from 
 import { fmtDistStr } from './hud/format'
 import { templateFor } from './hud/templates'
 import { ScreenWake } from './phone/wakelock'
+import { PhoneCompass } from './nav/compass'
+import { ImuReportPace, OsEventTypeList } from '@evenrealities/even_hub_sdk'
 import { InputNormalizer, type InputAction } from './glasses/input'
 import { BasemapManager } from './hud/basemap'
 import { MAP_ZOOMS, QUICK_TAG_LABEL, RADAR_CATEGORIES, type HudModel, type QuickItem, type RadarState, type ViewId } from './hud/model'
@@ -105,6 +107,10 @@ export class HudApp {
   poiDetail?: Poi
   private planningName?: string
   readonly wake = new ScreenWake()
+  readonly compass = new PhoneCompass()
+  /** 眼镜 IMU 原始数据（含义未在文档中说明，仅在诊断页开启以便确认） */
+  imu?: { x: number; y: number; z: number; t: number; count: number }
+  private imuOn = false
 
   viewIndex = 0
   overviewZoom: 'fit' | 'near' = 'fit'
@@ -143,6 +149,12 @@ export class HudApp {
     this.basemap.enabled = this.settings.basemap
 
     this.bridge.onEvenHubEvent((e) => {
+      const d = e.sysEvent?.imuData
+      if (e.sysEvent?.eventType === OsEventTypeList.IMU_DATA_REPORT && d) {
+        this.imu = { x: Number(d.x ?? NaN), y: Number(d.y ?? NaN), z: Number(d.z ?? NaN), t: Date.now(), count: (this.imu?.count ?? 0) + 1 }
+        for (const cb of this.listeners) cb()
+        return
+      }
       const a = this.input.normalize(e)
       if (a) this.handleInput(a)
     })
@@ -179,6 +191,9 @@ export class HudApp {
       if (document.visibilityState === 'visible' && !this.loc.simulating && (!this.loc.last || Date.now() - this.loc.last.t > 10_000)) void this.loc.start()
     })
     await this.display.start()
+    // 手机指南针：安卓直接开始；iPhone 需要用户在手机端点击授权（见手机端横幅）
+    this.compass.start()
+    this.compass.onChange(() => { for (const cb of this.listeners) cb() })
     this.scheduleRender(0)
     void this.loc.start().then(() => this.changed())
     await this.restoreSession()
@@ -845,10 +860,38 @@ export class HudApp {
   // ── 画面稳定化：小幅变化不重绘，减少 BLE 图块流量 ─────────────────
   private disp?: { p: LngLat; heading: number; speed: number; s: number; t: number }
 
+  /**
+   * 朝向融合：快速移动（≥2 m/s）时 GPS 行进方向最可靠（与手机怎么放无关）；
+   * 静止或慢走时 GPS 没有方向，改用手机指南针；都没有时退回路线方向。
+   */
+  headingSource: 'gps' | 'phone' | 'route' | 'none' = 'none'
+  private fusedHeading(f?: import('./nav/tracker').Fix): number {
+    const gps = f && Number.isFinite(f.heading) ? f.heading : NaN
+    const fast = f && Number.isFinite(f.speed) && f.speed >= 2
+    if (fast && Number.isFinite(gps)) { this.headingSource = 'gps'; return gps }
+    if (this.compass.fresh) { this.headingSource = 'phone'; return this.compass.heading }
+    if (Number.isFinite(gps)) { this.headingSource = 'gps'; return gps }
+    if (this.nav) { this.headingSource = 'route'; return this.nav.routeHeading }
+    this.headingSource = 'none'
+    return NaN
+  }
+
+  /** 眼镜 IMU 探测：只在手机端打开诊断时开启（省电） */
+  async setImuProbe(on: boolean): Promise<void> {
+    if (on === this.imuOn) return
+    this.imuOn = on
+    try {
+      await this.bridge.imuControl(on, ImuReportPace.P500)
+    } catch (e) {
+      console.warn('imuControl', e)
+    }
+  }
+
   /** 位置移动 ≥ 约 4 像素、航向变化 ≥ 6°、速度变化 ≥ 0.5km/h 或超过 10 秒才更新显示值 */
   private stableFix(): { fix?: import('./nav/tracker').Fix; s?: number } {
-    const f = this.loc.last
-    if (!f) return {}
+    const f0 = this.loc.last
+    if (!f0) return {}
+    const f = { ...f0, heading: this.fusedHeading(f0) }
     const now = Date.now()
     const d = this.disp
     const moveTh = 3 + (Number.isFinite(f.speed) ? f.speed : 0) * 1.0
@@ -903,6 +946,7 @@ export class HudApp {
       mapZoom: this.mapZoom,
       mapBasemap: this.settings.basemap ? this.mapBasemap.current : null,
       linkMs: this.display.linkMs || 200,
+      headingSource: this.headingSource,
       poi: this.poiDetail,
       planning: this.planningName,
     }
