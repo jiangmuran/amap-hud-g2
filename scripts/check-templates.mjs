@@ -42,7 +42,7 @@ const { out: problems, checked } = await p.evaluate(async () => {
     }
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-  for (const v of ['nav', 'overview', 'roadbook', 'telemetry', 'radar', 'go']) { app.setView(v); check(v) }
+  for (const v of ['nav', 'map', 'overview', 'roadbook', 'telemetry', 'radar', 'go']) { app.setView(v); check(v) }
   app.poiDetail = app.radar.pois[1]; check('poi'); app.poiDetail = undefined
   // 极端内容：超长路名 / 店名 / 地址
   const r = app.route

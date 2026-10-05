@@ -27,7 +27,11 @@ export class BasemapManager {
 
   constructor(private api: AmapClient) {}
 
+  /** 固定缩放级别（街道地图页用）；未设置时按速度自动选择 */
+  fixedZoom?: number
+
   zoomFor(speedMps: number): number {
+    if (this.fixedZoom !== undefined) return this.fixedZoom
     if (!Number.isFinite(speedMps) || speedMps < 3) return 17
     if (speedMps < 9) return 16
     if (speedMps < 20) return 15
@@ -43,13 +47,13 @@ export class BasemapManager {
       const radius = (cur.size / 2) * cur.mpp
       if (haversine(cur.center, p) < radius * 0.3) return
     }
-    if (Date.now() - this.lastAttempt < 20_000 && cur) return
+    if (Date.now() - this.lastAttempt < 20_000 && cur && cur.zoom === zoom) return
     this.lastAttempt = Date.now()
     this.loading = true
     this.api
       .staticMap(p, zoom, SIZE)
       .then((bmp) => {
-        this.current = { canvas: process(bmp), center: p, zoom, size: SIZE, mpp: metersPerPixel(p[1], zoom) }
+        this.current = { canvas: processStaticMap(bmp), center: p, zoom, size: SIZE, mpp: metersPerPixel(p[1], zoom) }
         this.errors = 0
         this.lastError = undefined
       })
@@ -76,7 +80,7 @@ export class BasemapManager {
  * （用真实静态图验证：17 级下道路 6–10px 宽，开运算后完整保留。）
  * 若提取比例异常则回退到 Sobel 边缘线框。
  */
-function process(bmp: ImageBitmap): HTMLCanvasElement {
+export function processStaticMap(bmp: ImageBitmap): HTMLCanvasElement {
   const c = createCanvas(bmp.width, bmp.height)
   const ctx = c.getContext('2d', { willReadFrequently: true })!
   ctx.drawImage(bmp, 0, 0)

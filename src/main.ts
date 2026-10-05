@@ -71,6 +71,8 @@ function seedDevData(app: HudApp): void {
   ]
   app.radar = { category: 2, pois, loading: false, fetchedAt: Date.now() }
   if (!app.loc.last) app.loc.push({ p: DEMO_ORIGIN, accuracy: 8, speed: 0, heading: 30, gcj: true })
+  app.place = { street: '三里屯路', address: '北京市朝阳区三里屯路', city: '北京市', district: '朝阳区', adcode: '110105' }
+  app.weather = { text: '晴', temperature: 23 }
   // 没有 Key 时，从眼镜发起的规划改用离线演示路线
   if (!app.api.hasKey()) {
     app.api.hasKey = () => true

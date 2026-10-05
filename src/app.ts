@@ -11,12 +11,12 @@ import { templateFor } from './hud/templates'
 import { ScreenWake } from './phone/wakelock'
 import { InputNormalizer, type InputAction } from './glasses/input'
 import { BasemapManager } from './hud/basemap'
-import { QUICK_TAG_LABEL, RADAR_CATEGORIES, type HudModel, type QuickItem, type RadarState, type ViewId } from './hud/model'
+import { MAP_ZOOMS, QUICK_TAG_LABEL, RADAR_CATEGORIES, type HudModel, type QuickItem, type RadarState, type ViewId } from './hud/model'
 import { buildTextFrame } from './hud/textHud'
 import { poiMeta, renderHud } from './hud/views'
 import { demoRouteJson, DEMO_ORIGIN } from './nav/demo'
 import { LocationService, RouteSimulator } from './nav/location'
-import { parseRoute, type Route, type TravelMode } from './nav/route'
+import { MODE_LABEL, parseRoute, type Route, type TravelMode } from './nav/route'
 import { RouteTracker, type NavState } from './nav/tracker'
 import { TripRecorder } from './nav/trip'
 import { loadSettings, pushHistory, samePlace, saveSettings, type KV, type Place, type Settings } from './storage'
@@ -30,6 +30,7 @@ const MENU = {
   radar: 6,
   home: 7,
   go: 8,
+  mode: 9,
 } as const
 
 const MENU_ITEMS: MenuItem[] = [
@@ -41,7 +42,10 @@ const MENU_ITEMS: MenuItem[] = [
   { id: MENU.radar, name: '周边扫描' },
   { id: MENU.home, name: '返回起点' },
   { id: MENU.go, name: '快捷前往' },
+  { id: MENU.mode, name: '切换出行方式' },
 ]
+
+const MODES: TravelMode[] = ['walking', 'bicycling', 'electrobike', 'driving']
 
 const ARROWS = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖']
 /** 相对方向箭头（只用固件字体里存在的字符） */
@@ -53,6 +57,7 @@ type Picker =
   | { kind: 'go'; items: QuickItem[] }
   | { kind: 'poi'; items: Poi[] }
   | { kind: 'category' }
+  | { kind: 'mode' }
 
 const REFRESH_MS = { eco: 2000, standard: 1000, fast: 450 }
 
@@ -75,6 +80,9 @@ export class HudApp {
   readonly trip = new TripRecorder()
   readonly display: GlassesDisplay
   readonly basemap: BasemapManager
+  /** 街道地图页专用底图（固定缩放级别，只在该页可见时拉取） */
+  readonly mapBasemap: BasemapManager
+  mapZoom = 16
   readonly frame = createCanvas(SCREEN_W, SCREEN_H)
 
   route?: Route
@@ -119,6 +127,8 @@ export class HudApp {
     this.loc = new LocationService(bridge, () => this.settings?.locationIsWgs ?? true)
     this.display = new GlassesDisplay(bridge, MENU_ITEMS)
     this.basemap = new BasemapManager(this.api)
+    this.mapBasemap = new BasemapManager(this.api)
+    this.mapBasemap.fixedZoom = this.mapZoom
   }
 
   // ── 生命周期 ──────────────────────────────────────────────────────
@@ -212,9 +222,9 @@ export class HudApp {
   // ── 视图 ─────────────────────────────────────────────────────────
 
   views(): ViewId[] {
-    if (this.arrival) return ['arrival', 'go', 'radar', 'telemetry', 'overview']
-    if (this.route) return ['nav', 'overview', 'roadbook', 'telemetry', 'radar', 'go']
-    return ['cruise', 'go', 'radar', 'telemetry']
+    if (this.arrival) return ['arrival', 'map', 'go', 'radar', 'telemetry']
+    if (this.route) return ['nav', 'map', 'overview', 'roadbook', 'telemetry', 'radar', 'go']
+    return ['cruise', 'map', 'go', 'radar', 'telemetry']
   }
 
   get view(): ViewId {
@@ -286,7 +296,8 @@ export class HudApp {
         void this.bridge.shutDownPageContainer(1)
         return
       case 'longpress':
-        this.peekUntil = Date.now() + 10_000
+        if (this.view === 'map') this.zoomMap(-1)
+        else this.peekUntil = Date.now() + 10_000
         break
       case 'menu':
         void this.onMenu(a.id)
@@ -326,10 +337,25 @@ export class HudApp {
     setTimeout(() => void this.display.resume({ rebuild: true }), 300)
   }
 
+  /** 街道地图缩放：单击放大、长按缩小 */
+  zoomMap(dir: 1 | -1): void {
+    const i = MAP_ZOOMS.indexOf(this.mapZoom)
+    const next = MAP_ZOOMS[Math.max(0, Math.min(MAP_ZOOMS.length - 1, i + dir))]
+    if (next === this.mapZoom) return this.toast(dir > 0 ? '已是最大' : '已是最小', 1000)
+    this.mapZoom = next
+    this.mapBasemap.fixedZoom = next
+    const f = this.loc.last
+    if (f) this.mapBasemap.maybeRefresh(f.p, f.speed)
+    this.display.markInput()
+  }
+
   private onClick(): void {
     switch (this.view) {
       case 'overview':
         this.overviewZoom = this.overviewZoom === 'fit' ? 'near' : 'fit'
+        break
+      case 'map':
+        this.zoomMap(+1)
         break
       case 'roadbook': {
         const total = this.route?.steps.length ?? 0
@@ -399,6 +425,9 @@ export class HudApp {
         this.setView('go')
         await this.openGoPicker()
         break
+      case MENU.mode:
+        await this.openModePicker()
+        break
     }
     this.changed()
   }
@@ -434,8 +463,11 @@ export class HudApp {
     if (!items.length) return this.toast('还没有快捷点，请在手机端添加')
     this.picker = { kind: 'go', items }
     await this.display.showList({
-      title: '前往 · 选择目的地      双击返回',
-      items: items.map((q) => `${QUICK_TAG_LABEL[q.tag]}  ${q.place.name}${this.relLabel(q.place.location)}`),
+      title: `前往 · ${MODE_LABEL[this.settings.travelMode]} · 选择目的地      双击返回`,
+      items: [
+        `⇔ 出行方式：${MODE_LABEL[this.settings.travelMode]}（单击切换）`,
+        ...items.map((q) => `${QUICK_TAG_LABEL[q.tag]}  ${q.place.name}${this.relLabel(q.place.location)}`),
+      ],
     })
     this.changed()
   }
@@ -457,6 +489,48 @@ export class HudApp {
     this.changed()
   }
 
+  async openModePicker(): Promise<void> {
+    this.picker = { kind: 'mode' }
+    await this.display.showList({
+      title: this.route ? '切换出行方式（将重新规划路线）      双击返回' : '选择出行方式      双击返回',
+      items: MODES.map((m) => `${m === (this.route?.mode ?? this.settings.travelMode) ? '●' : '○'}  ${MODE_LABEL[m]}`),
+    })
+    this.changed()
+  }
+
+  /** 切换出行方式：保存为默认；导航中则从当前位置按新方式重新规划到原目的地 */
+  async switchMode(mode: TravelMode): Promise<void> {
+    await this.updateSettings({ travelMode: mode })
+    const route = this.route
+    const session = this.session
+    if (!route || !session || route.mode === mode) return this.toast(`出行方式：${MODE_LABEL[mode]}`, 1500)
+    if (session.dest.name === '演示目的地') {
+      const { route: r } = this.demoRoute(mode)
+      this.startNavigation(r, session.dest, { simulate: !!this.sim })
+      return this.toast(`已切换为${MODE_LABEL[mode]}`, 2000)
+    }
+    const from = this.loc.last?.p
+    if (!from) return this.toast('等待定位后再切换')
+    this.planningName = session.dest.name
+    this.toast(`切换为${MODE_LABEL[mode]} · 重新规划中`, 8000)
+    try {
+      const [r] = await this.planRoutes(session.dest, mode, from)
+      this.applyRoute(r)
+      if (this.sim) {
+        const speed = mode === 'driving' ? 12 : mode === 'walking' ? 1.6 : 5
+        this.sim.dispose()
+        this.sim = new RouteSimulator(r, this.loc, speed)
+        this.sim.start()
+      }
+      this.toast(`已切换为${MODE_LABEL[mode]} · ${fmtDistStr(r.distance)}`, 2500)
+    } catch (e) {
+      this.toast(`切换失败：${(e as Error).message}`, 4000)
+    } finally {
+      this.planningName = undefined
+      this.changed()
+    }
+  }
+
   async openCategoryPicker(): Promise<void> {
     this.picker = { kind: 'category' }
     await this.display.showList({
@@ -470,9 +544,14 @@ export class HudApp {
     const pk = this.picker
     if (!pk) return
     if (pk.kind === 'go') {
-      const q = pk.items[index]
+      if (index === 0) return this.openModePicker()
+      const q = pk.items[index - 1]
       await this.closePicker()
       if (q) await this.navigateTo(q.place)
+    } else if (pk.kind === 'mode') {
+      const mode = MODES[index]
+      await this.closePicker()
+      if (mode) await this.switchMode(mode)
     } else if (pk.kind === 'poi') {
       if (index === 0) return this.openCategoryPicker()
       const p = pk.items[index - 1]
@@ -521,6 +600,7 @@ export class HudApp {
   private onFix(fix: import('./nav/tracker').Fix): void {
     this.trip.add(fix)
     this.basemap.maybeRefresh(fix.p, fix.speed)
+    if (this.view === 'map') this.mapBasemap.maybeRefresh(fix.p, fix.speed)
     if (this.tracker && !this.arrival) {
       this.nav = this.tracker.update(fix)
       if (this.nav.arrived) this.arrive()
@@ -802,6 +882,10 @@ export class HudApp {
       locationSource: this.loc.simulating ? 'sim' : this.loc.source,
       arrival: this.arrival,
       quick: this.quickItems(),
+      travelMode: this.settings.travelMode,
+      mapZoom: this.mapZoom,
+      mapBasemap: this.settings.basemap ? this.mapBasemap.current : null,
+      linkMs: this.display.linkMs || 200,
       poi: this.poiDetail,
       planning: this.planningName,
     }
@@ -838,7 +922,7 @@ export class HudApp {
     const speed = sp !== undefined && Number.isFinite(sp) ? sp : 0
     const map = Math.round(Math.min(3000, Math.max(800, 3200 - speed * 160)))
     // 宿主单块越慢，间隔越大（实测有设备单块 >1.5s，后台刷新会把通道占满）
-    const slow = Math.min(10, Math.max(1, this.display.stats.avgSendMs / 160))
+    const slow = Math.min(10, Math.max(1, this.display.linkMs / 160))
     const k = (a: number[]) => a.map((v) => Math.round(v * slow))
     switch (view) {
       case 'nav': return k([800, map, 1000, map])
@@ -852,6 +936,7 @@ export class HudApp {
 
   render(): void {
     const m = this.model()
+    if (m.view === 'map' && this.loc.last) this.mapBasemap.maybeRefresh(this.loc.last.p, this.loc.last.speed)
     // 有模板的页面走模板（只发送变化的文本/小图）；全局地图等走四图块
     const tpl = this.display.mode === 'image' && !this.display.listOpen ? templateFor(m) : null
     if (tpl) {

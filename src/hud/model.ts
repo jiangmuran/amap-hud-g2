@@ -6,7 +6,10 @@ import type { Fix, NavState } from '../nav/tracker'
 import type { TripSnapshot } from '../nav/trip'
 import type { Basemap } from './basemap'
 
-export type ViewId = 'nav' | 'overview' | 'roadbook' | 'telemetry' | 'radar' | 'go' | 'poi' | 'cruise' | 'arrival' | 'focus'
+export type ViewId = 'nav' | 'map' | 'overview' | 'roadbook' | 'telemetry' | 'radar' | 'go' | 'poi' | 'cruise' | 'arrival' | 'focus'
+
+/** 街道地图页的缩放档位（高德静态图 zoom） */
+export const MAP_ZOOMS = [14, 15, 16, 17, 18]
 
 export type QuickTag = 'home' | 'work' | 'pin' | 'recent'
 
@@ -19,6 +22,7 @@ export const QUICK_TAG_LABEL: Record<QuickTag, string> = { home: '家', work: '�
 
 export const VIEW_LABEL: Record<ViewId, string> = {
   nav: 'NAV',
+  map: 'STREET',
   overview: 'MAP',
   roadbook: 'ROUTE',
   telemetry: 'DATA',
@@ -81,6 +85,13 @@ export interface HudModel {
   simulated: boolean
   hasKey: boolean
   locationSource: string
+  /** 街道地图页：缩放级别、专用底图 */
+  mapZoom: number
+  mapBasemap?: Basemap | null
+  /** 实测单张图片发送耗时（ms），用于自适应刷新间隔 */
+  linkMs: number
+  /** 默认出行方式（「前往」页发起导航时使用） */
+  travelMode: import('../nav/route').TravelMode
   /** 眼镜「前往」页的快捷点 */
   quick: QuickItem[]
   /** POI 详情卡 */

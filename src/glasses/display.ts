@@ -75,10 +75,11 @@ export type TileEncoding = 'gray4' | 'rgba'
 export interface TemplateSpec {
   key: string
   images: { name: string; x: number; y: number; w: number; h: number }[]
-  texts: { name: string; x: number; y: number; w: number; h: number; color?: number; border?: number; padding?: number }[]
+  texts: { name: string; x: number; y: number; w: number; h: number; color?: number; border?: number; borderColor?: number; radius?: number; padding?: number }[]
 }
 
 export interface DisplayStats {
+  lastSendMs: number
   /** 文本控件平均更新耗时与次数 */
   textAvgMs: number
   textSends: number
@@ -114,7 +115,7 @@ export class GlassesDisplay {
   ready = false
   /** 宿主模态层（退出确认）显示期间暂停发送：此时发送必然失败，不能算作通道损坏 */
   private paused = false
-  readonly stats: DisplayStats = { textAvgMs: 0, textSends: 0, encoding: 'gray4', lastTileBytes: 0, perTile: [0, 0, 0, 0], inputLatencyMs: 0, sends: 0, failures: 0, lastFrameMs: 0, avgSendMs: 0, tilesLastFrame: 0 }
+  readonly stats: DisplayStats = { lastSendMs: 0, textAvgMs: 0, textSends: 0, encoding: 'gray4', lastTileBytes: 0, perTile: [0, 0, 0, 0], inputLatencyMs: 0, sends: 0, failures: 0, lastFrameMs: 0, avgSendMs: 0, tilesLastFrame: 0 }
   /** 已成功发送到眼镜的画面（手机端镜像预览用） */
   readonly shadow = createCanvas(SCREEN_W, SCREEN_H)
   onShadowChange?: () => void
@@ -143,6 +144,9 @@ export class GlassesDisplay {
   private tplImgSent = new Map<string, number>()
   private tplImgPending = new Map<string, { hash: number; q: Uint8Array; w: number; h: number }>()
   private tplImgLevels = new Map<string, { q: Uint8Array; w: number; h: number }>()
+  /** 正在发送中的内容：发送期间重绘出相同内容时不能再排队，否则会重复发送 */
+  private tplTextInflight = new Map<string, string>()
+  private tplImgInflight = new Map<string, number>()
 
   get templateKey(): string | null {
     return this.tpl?.key ?? null
@@ -237,7 +241,7 @@ export class GlassesDisplay {
       this.tplIds.set(x.name, id)
       return new TextContainerProperty({
         xPosition: x.x, yPosition: x.y, width: x.w, height: x.h,
-        borderWidth: x.border ?? 0, borderColor: 6, borderRadius: 4, paddingLength: x.padding ?? 2,
+        borderWidth: x.border ?? 0, borderColor: x.borderColor ?? 6, borderRadius: x.radius ?? 6, paddingLength: x.padding ?? 2,
         containerID: id, containerName: x.name, content: this.tplTextPending.get(x.name) ?? this.tplTextSent.get(x.name) ?? ' ',
         isEventCapture: 0, textColor: x.color ?? 4, zOrderIndex: z++,
       })
@@ -280,7 +284,7 @@ export class GlassesDisplay {
     let changed = false
     for (const [name, raw] of Object.entries(texts)) {
       const v = (raw || ' ').slice(0, 900)
-      if (this.tplTextSent.get(name) === v) { this.tplTextPending.delete(name); continue }
+      if (this.tplTextSent.get(name) === v || this.tplTextInflight.get(name) === v) { this.tplTextPending.delete(name); continue }
       if (this.tplTextPending.get(name) !== v) { this.tplTextPending.set(name, v); changed = true }
     }
     for (const [name, canvas] of Object.entries(images)) {
@@ -295,7 +299,7 @@ export class GlassesDisplay {
       }
       hash >>>= 0
       this.tplImgLevels.set(name, { q, w: canvas.width, h: canvas.height })
-      if (this.tplImgSent.get(name) === hash) { this.tplImgPending.delete(name); continue }
+      if (this.tplImgSent.get(name) === hash || this.tplImgInflight.get(name) === hash) { this.tplImgPending.delete(name); continue }
       if (this.tplImgPending.get(name)?.hash !== hash) { this.tplImgPending.set(name, { hash, q, w: canvas.width, h: canvas.height }); changed = true }
     }
     if (changed) {
@@ -313,7 +317,13 @@ export class GlassesDisplay {
         const id = this.tplIds.get(tname)
         if (id === undefined) continue
         const t0 = performance.now()
-        const ok = await this.bridge.textContainerUpgrade(new TextContainerUpgrade({ containerID: id, containerName: tname, content: tval }))
+        this.tplTextInflight.set(tname, tval!)
+        let ok = false
+        try {
+          ok = await this.bridge.textContainerUpgrade(new TextContainerUpgrade({ containerID: id, containerName: tname, content: tval }))
+        } finally {
+          this.tplTextInflight.delete(tname)
+        }
         this.stats.textAvgMs = this.stats.textAvgMs ? this.stats.textAvgMs * 0.8 + (performance.now() - t0) * 0.2 : performance.now() - t0
         this.stats.textSends++
         if (ok) this.tplTextSent.set(tname, tval!)
@@ -330,14 +340,17 @@ export class GlassesDisplay {
       const bytes = this.stats.encoding === 'gray4' ? await encodeGray4Png(img!.q, img!.w, img!.h) : await this.encodeLevelsRgba(img!.q, img!.w, img!.h)
       const t0 = performance.now()
       let res: ImageRawDataUpdateResult
+      this.tplImgInflight.set(iname, img!.hash)
       try {
         res = ImageRawDataUpdateResult.normalize(await this.bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: id, containerName: iname, imageData: bytes })))
       } catch {
         res = ImageRawDataUpdateResult.sendFailed
+      } finally {
+        this.tplImgInflight.delete(iname)
       }
       const dt = performance.now() - t0
       this.stats.sends++
-      this.stats.avgSendMs = this.stats.avgSendMs ? this.stats.avgSendMs * 0.9 + dt * 0.1 : dt
+      this.recordSend(dt)
       if (res === ImageRawDataUpdateResult.success) {
         this.fastFails = 0
         this.probing = false
@@ -596,6 +609,20 @@ export class GlassesDisplay {
     return bytes
   }
 
+  /**
+   * 记录一次图片发送耗时。滑动平均权重 0.3（快速收敛），linkMs 取平均与最近一次的较大值：
+   * 链路变慢时刷新间隔立刻跟着拉长，避免按过时的低估值把通道占满。
+   */
+  private recordSend(dt: number): void {
+    this.stats.avgSendMs = this.stats.avgSendMs ? this.stats.avgSendMs * 0.7 + dt * 0.3 : dt
+    this.stats.lastSendMs = dt
+  }
+
+  /** 用于刷新节流的保守链路耗时估计 */
+  get linkMs(): number {
+    return Math.max(this.stats.avgSendMs, this.stats.lastSendMs)
+  }
+
   /** 诊断用：直接发送一块指定内容，返回耗时与结果 */
   async benchmarkSend(i: number, q: Uint8Array, enc: TileEncoding): Promise<{ ms: number; bytes: number; result: string }> {
     let bytes: Uint8Array
@@ -770,7 +797,7 @@ export class GlassesDisplay {
     }
     const dt = performance.now() - t0
     this.stats.sends++
-    this.stats.avgSendMs = this.stats.avgSendMs ? this.stats.avgSendMs * 0.9 + dt * 0.1 : dt
+    this.recordSend(dt)
 
     if (res === ImageRawDataUpdateResult.success) {
       this.sent[i] = q.hash

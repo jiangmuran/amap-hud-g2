@@ -31,6 +31,7 @@ const MENU_ACTIONS = [
   { id: 6, name: '周边扫描' },
   { id: 7, name: '返回起点' },
   { id: 8, name: '快捷前往' },
+  { id: 9, name: '切换出行方式' },
 ]
 
 type SheetKind = 'place' | 'settings' | 'menu' | 'platform' | null
@@ -222,6 +223,15 @@ export class PhoneUI {
       case 'platform':
         void this.choosePlatform(el.dataset.v as 'ios' | 'android')
         return
+      case 'nav-mode': {
+        const md = el.dataset.v as TravelMode
+        if (this.app.route && md !== this.app.route.mode) {
+          this.mode = md
+          this.showToast(`切换为${MODE_LABEL[md]}，重新规划中…`)
+          void this.app.switchMode(md)
+        }
+        return
+      }
       case 'stop':
         this.app.stopNavigation()
         return this.showToast('导航已结束')
@@ -471,6 +481,11 @@ export class PhoneUI {
           <div class="stat"><div class="v" data-f="dur">--</div><div class="k">预计用时</div></div>
           <div class="stat"><div class="v" data-f="eta">--</div><div class="k">到达时间</div></div>
         </div>
+        <div class="segmented" style="margin-bottom:12px" role="tablist" aria-label="出行方式">${MODES.map((md, i) => {
+          const on = md === route.mode
+          const afterOn = i > 0 && MODES[i - 1] === route.mode
+          return `<button role="tab" aria-selected="${on}" class="${on ? 'on' : ''} ${afterOn ? 'after-on' : ''}" data-act="nav-mode" data-v="${md}">${MODE_ICON[md](14)}${MODE_LABEL[md]}</button>`
+        }).join('')}</div>
         <div class="btn-row">
           <button class="btn destructive" data-act="stop">${icon.stop(14)}结束导航</button>
         </div>
@@ -852,7 +867,7 @@ function haversineSafe(a: [number, number], b: [number, number]): number {
 }
 
 function viewName(v: string): string {
-  return ({ nav: '导航', overview: '全局地图', roadbook: '路书', telemetry: '仪表', radar: '周边雷达', go: '前往', poi: '地点详情', cruise: '巡航', arrival: '到达', focus: '专注' } as Record<string, string>)[v] ?? v
+  return ({ nav: '导航', overview: '全局地图', roadbook: '路书', telemetry: '仪表', radar: '周边雷达', go: '前往', poi: '地点详情', map: '街道地图', cruise: '巡航', arrival: '到达', focus: '专注' } as Record<string, string>)[v] ?? v
 }
 
 function viewDesc(v: string): string {
@@ -863,7 +878,8 @@ function viewDesc(v: string): string {
     telemetry: '速度表、行程、海拔、航向',
     radar: '附近地铁/超市/美食，含评分与楼层',
     go: '家、公司、快捷点，眼镜上直接选择导航',
-    cruise: '罗盘航向带、地址、天气、返航',
+    map: '大幅街道地图与位置朝向，单击放大、长按缩小',
+    cruise: '街道小地图、地址、航向、天气、返航',
     arrival: '到达与行程总结',
   } as Record<string, string>)[v] ?? ''
 }

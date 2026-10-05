@@ -5,11 +5,12 @@
 
 import type { TemplateSpec } from '../glasses/display'
 import { createCanvas } from '../glasses/display'
-import { angleDiff, bearing, compass8, haversine, LocalProjector, normDeg, type LngLat } from '../geo'
+import { angleDiff, bearing, compass8, haversine, LocalProjector, mercatorPx, metersPerPixel, normDeg, type LngLat } from '../geo'
 import { MANEUVER_LABEL, MODE_LABEL, type Maneuver } from '../nav/route'
 import { brackets, chevron, diamond, L, maneuverIcon, pointer, reticle, type Ctx } from './gfx'
 import { fmtClock, fmtDistStr, fmtDurationZh, fmtSpeed } from './format'
-import { displayHeading, QUICK_TAG_LABEL, RADAR_CATEGORIES, VIEW_LABEL, type HudModel, type ViewId } from './model'
+import { displayHeading, MAP_ZOOMS, QUICK_TAG_LABEL, RADAR_CATEGORIES, VIEW_LABEL, type HudModel, type ViewId } from './model'
+import type { Basemap } from './basemap'
 
 export interface TemplateFrame {
   texts: Record<string, string>
@@ -34,10 +35,11 @@ function pageDots(m: HudModel): string {
   return `${s}  ${VIEW_LABEL[m.view === 'focus' ? 'nav' : m.view]}`
 }
 
-function statusLine(m: HudModel, extra = ''): string {
+function statusLine(m: HudModel, extra?: string): string {
   if (m.toast) return `※ ${m.toast}`
-  const bat = m.glasses.battery !== undefined ? `  ·  眼镜 ${m.glasses.battery}%` : ''
-  return `${fmtClock(m.now)}${bat}${extra}     ${pageDots(m)}`
+  // extra 优先于电量（底栏只有一行；电量过低时另有提示）
+  const mid = extra ?? (m.glasses.battery !== undefined ? `  ·  眼镜 ${m.glasses.battery}%` : '')
+  return `${fmtClock(m.now)}${mid}     ${pageDots(m)}`
 }
 
 function bar(p: number, n = 22): string {
@@ -66,82 +68,179 @@ function canvasCache() {
 }
 const img = canvasCache()
 
+/**
+ * 图片刷新节流：内容键（已量化的位置/角度/缩放）变化后，至少间隔 minMs 才真正重画。
+ * force=true（如用户缩放）时立即重画。返回本次应使用的键：被节流时沿用旧键，图片不变就不会发送。
+ */
+const gates = new Map<string, { key: string; t: number }>()
+function gatedKey(name: string, key: string, minMs: number, force = false): string {
+  const g = gates.get(name)
+  const now = Date.now()
+  if (!g || force || (g.key !== key && now - g.t >= minMs)) {
+    gates.set(name, { key, t: now })
+    return key
+  }
+  return g.key
+}
+
+/** 根据实测单张图片耗时得到图片最小刷新间隔：链路越慢，间隔越长 */
+function imageInterval(m: HudModel, factor: number, min: number, max: number): number {
+  return Math.round(Math.min(max, Math.max(min, m.linkMs * factor)))
+}
+
+/** 把底图按「以 me 为中心、每像素 mpp 米、旋转 rot 度（车头朝上用 -heading）」画到 ctx 的 (cx, cy) */
+function drawBasemap(ctx: Ctx, bm: Basemap, me: LngLat, cx: number, cy: number, mpp: number, rot: number, boost = 1): void {
+  const [bx, by] = mercatorPx(bm.center, bm.zoom)
+  const [ux, uy] = mercatorPx(me, bm.zoom)
+  // 用户在底图像素坐标中的位置
+  const px = bm.size / 2 + (ux - bx)
+  const py = bm.size / 2 + (uy - by)
+  const k = bm.mpp / mpp
+  ctx.save()
+  ctx.translate(cx, cy)
+  ctx.rotate((rot * Math.PI) / 180)
+  ctx.scale(k, k)
+  ctx.imageSmoothingEnabled = true
+  ctx.drawImage(bm.canvas, -px, -py)
+  // 提亮：用 lighter 叠画（ctx.filter 在部分 iOS WebView 上不可用）
+  for (let b = boost - 1; b > 0.01; b -= 1) {
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.globalAlpha = Math.min(1, b)
+    ctx.drawImage(bm.canvas, -px, -py)
+  }
+  ctx.restore()
+}
+
+/** 在本地投影下画路线（已走暗、未走亮） */
+function drawRouteOn(ctx: Ctx, m: HudModel, me: LngLat, cx: number, cy: number, mpp: number, rot: number, width = 4): void {
+  const route = m.route
+  if (!route) return
+  const proj = new LocalProjector(me)
+  const r = (rot * Math.PI) / 180
+  const cos = Math.cos(r), sin = Math.sin(r)
+  const toS = (p: LngLat): [number, number] => {
+    const [x, y] = proj.toXY(p)
+    return [cx + (x * cos - y * sin) / mpp, cy - (x * sin + y * cos) / mpp]
+  }
+  const s0 = m.nav?.s ?? 0
+  let split = route.cum.findIndex((c) => c > s0)
+  if (split < 0) split = route.points.length - 1
+  const stroke = (i0: number, i1: number, lw: number, lv: number) => {
+    ctx.beginPath()
+    for (let i = i0; i <= i1; i++) {
+      const [x, y] = toS(route.points[i])
+      if (i === i0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    }
+    ctx.strokeStyle = L(lv)
+    ctx.lineWidth = lw
+    ctx.stroke()
+  }
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+  if (split > 0) stroke(0, split, 2, 5)
+  stroke(Math.max(0, split - 1), route.points.length - 1, width + 4, 4)
+  stroke(Math.max(0, split - 1), route.points.length - 1, width, 15)
+  const [dx, dy] = toS(route.destination)
+  reticle(ctx, dx, dy, 6, 15)
+}
+
+function scaleText(meters: number): string {
+  return meters >= 1000 ? `${meters / 1000}KM` : `${meters}M`
+}
+
 // ── 页面结构 ──────────────────────────────────────────────────────
 // 每页最多 4 张图片、7 个文本（另有 1 个全屏透明文本负责接收输入）。
+
+// 统一网格：外边距 6px，卡片间距 6px，三列卡片宽 184px。卡片 = 圆角边框文本框（标签一行 + 数值一行）。
+const M = 6
+const CARD = { y: 150, w: 184, h: 78 }
+const card = (name: string, col: number, y = CARD.y, h = CARD.h) =>
+  ({ name, x: M + col * (CARD.w + 6), y, w: CARD.w, h, color: 4, border: 1, borderColor: 7, radius: 8, padding: 8 })
+const STATUS = { name: 'status', x: M, y: 250, w: 564, h: 36, color: 1 }
 
 export const TEMPLATES: Partial<Record<ViewId, TemplateSpec>> = {
   nav: {
     key: 'nav',
-    images: [{ name: 'arrow', x: 4, y: 4, w: 136, h: 136 }],
+    images: [{ name: 'arrow', x: M, y: M, w: 136, h: 136 }],
     texts: [
-      { name: 'main', x: 152, y: 8, w: 420, h: 62, color: 4 },
-      { name: 'then', x: 152, y: 76, w: 420, h: 34, color: 2 },
-      { name: 'prog', x: 152, y: 110, w: 420, h: 32, color: 3 },
-      { name: 'stats', x: 4, y: 150, w: 568, h: 92, color: 4, border: 1, padding: 8 },
-      { name: 'status', x: 4, y: 254, w: 568, h: 32, color: 1 },
+      { name: 'main', x: 152, y: 8, w: 418, h: 62, color: 4 },
+      { name: 'then', x: 152, y: 74, w: 418, h: 34, color: 2 },
+      { name: 'prog', x: 152, y: 108, w: 418, h: 34, color: 3 },
+      card('c0', 0), card('c1', 1), card('c2', 2),
+      STATUS,
     ],
   },
   cruise: {
     key: 'cruise',
-    images: [{ name: 'compass', x: 4, y: 4, w: 136, h: 136 }],
+    images: [{ name: 'minimap', x: M, y: M, w: 136, h: 136 }],
     texts: [
-      { name: 'title', x: 152, y: 8, w: 420, h: 32, color: 2 },
-      { name: 'place', x: 152, y: 42, w: 420, h: 62, color: 4 },
-      { name: 'heading', x: 152, y: 108, w: 420, h: 32, color: 3 },
-      { name: 'stats', x: 4, y: 150, w: 568, h: 92, color: 4, border: 1, padding: 8 },
-      { name: 'status', x: 4, y: 254, w: 568, h: 32, color: 1 },
+      { name: 'title', x: 152, y: 8, w: 418, h: 32, color: 2 },
+      { name: 'place', x: 152, y: 42, w: 418, h: 62, color: 4 },
+      { name: 'heading', x: 152, y: 108, w: 418, h: 34, color: 3 },
+      card('c0', 0), card('c1', 1), card('c2', 2),
+      STATUS,
     ],
   },
   telemetry: {
     key: 'telemetry',
     images: [],
     texts: [
-      { name: 'c0', x: 4, y: 4, w: 186, h: 76, color: 4, border: 1, padding: 8 },
-      { name: 'c1', x: 195, y: 4, w: 186, h: 76, color: 4, border: 1, padding: 8 },
-      { name: 'c2', x: 386, y: 4, w: 186, h: 76, color: 4, border: 1, padding: 8 },
-      { name: 'c3', x: 4, y: 86, w: 186, h: 76, color: 4, border: 1, padding: 8 },
-      { name: 'c4', x: 195, y: 86, w: 186, h: 76, color: 4, border: 1, padding: 8 },
-      { name: 'c5', x: 386, y: 86, w: 186, h: 76, color: 4, border: 1, padding: 8 },
-      { name: 'status', x: 4, y: 176, w: 568, h: 110, color: 2, padding: 4 },
+      card('c0', 0, M, 76), card('c1', 1, M, 76), card('c2', 2, M, 76),
+      card('c3', 0, 88, 76), card('c4', 1, 88, 76), card('c5', 2, 88, 76),
+      { name: 'status', x: M, y: 172, w: 564, h: 114, color: 2, padding: 4 },
     ],
   },
   roadbook: {
     key: 'roadbook',
     images: [],
     texts: [
-      { name: 'title', x: 4, y: 4, w: 568, h: 32, color: 2 },
-      { name: 'cur', x: 4, y: 40, w: 568, h: 48, color: 4, border: 1, padding: 8 },
-      { name: 'rest', x: 4, y: 96, w: 568, h: 150, color: 3, padding: 8 },
-      { name: 'status', x: 4, y: 254, w: 568, h: 32, color: 1 },
+      { name: 'title', x: M, y: M, w: 564, h: 32, color: 2 },
+      { name: 'cur', x: M, y: 40, w: 564, h: 48, color: 4, border: 1, borderColor: 9, radius: 8, padding: 8 },
+      { name: 'rest', x: M, y: 94, w: 564, h: 152, color: 3, padding: 8 },
+      STATUS,
     ],
   },
   go: {
     key: 'go',
     images: [],
     texts: [
-      { name: 'title', x: 4, y: 4, w: 568, h: 32, color: 2 },
-      { name: 'list', x: 4, y: 40, w: 568, h: 208, color: 4, border: 1, padding: 8 },
-      { name: 'status', x: 4, y: 254, w: 568, h: 32, color: 1 },
+      { name: 'title', x: M, y: M, w: 564, h: 32, color: 2 },
+      { name: 'list', x: M, y: 40, w: 564, h: 204, color: 4, border: 1, borderColor: 7, radius: 8, padding: 8 },
+      STATUS,
     ],
   },
   radar: {
     key: 'radar',
-    images: [{ name: 'radar', x: 4, y: 4, w: 140, h: 140 }],
+    images: [{ name: 'radar', x: M, y: M, w: 136, h: 136 }],
     texts: [
-      { name: 'title', x: 152, y: 8, w: 420, h: 32, color: 2 },
-      { name: 'top', x: 152, y: 42, w: 420, h: 100, color: 4 },
-      { name: 'list', x: 4, y: 150, w: 568, h: 98, color: 3, border: 1, padding: 6 },
-      { name: 'status', x: 4, y: 254, w: 568, h: 32, color: 1 },
+      { name: 'title', x: 152, y: 8, w: 418, h: 32, color: 2 },
+      { name: 'top', x: 152, y: 42, w: 418, h: 100, color: 4 },
+      { name: 'list', x: M, y: 150, w: 564, h: 98, color: 3, border: 1, borderColor: 7, radius: 8, padding: 6 },
+      STATUS,
     ],
   },
   poi: {
     key: 'poi',
-    images: [{ name: 'dir', x: 436, y: 8, w: 136, h: 136 }],
+    images: [{ name: 'dir', x: 434, y: M, w: 136, h: 136 }],
     texts: [
-      { name: 'info', x: 4, y: 4, w: 424, h: 150, color: 4 },
-      { name: 'dist', x: 436, y: 148, w: 136, h: 32, color: 4 },
-      { name: 'addr', x: 4, y: 158, w: 424, h: 90, color: 2, border: 1, padding: 8 },
-      { name: 'status', x: 4, y: 254, w: 568, h: 32, color: 1 },
+      { name: 'info', x: M, y: M, w: 422, h: 148, color: 4 },
+      { name: 'dist', x: 434, y: 146, w: 136, h: 32, color: 4 },
+      { name: 'addr', x: M, y: 158, w: 422, h: 86, color: 2, border: 1, borderColor: 6, radius: 8, padding: 8 },
+      STATUS,
+    ],
+  },
+  map: {
+    key: 'map',
+    images: [
+      { name: 'mapTop', x: 0, y: 0, w: 288, h: 144 },
+      { name: 'mapBottom', x: 0, y: 144, w: 288, h: 144 },
+    ],
+    texts: [
+      { name: 'title', x: 296, y: 8, w: 274, h: 32, color: 2 },
+      { name: 'place', x: 296, y: 42, w: 274, h: 60, color: 4 },
+      { name: 'info', x: 296, y: 104, w: 274, h: 114, color: 4, border: 1, borderColor: 7, radius: 8, padding: 8 },
+      { name: 'status', x: 296, y: 224, w: 274, h: 62, color: 1 },
     ],
   },
   overview: {
@@ -151,19 +250,19 @@ export const TEMPLATES: Partial<Record<ViewId, TemplateSpec>> = {
       { name: 'mapBottom', x: 0, y: 144, w: 288, h: 144 },
     ],
     texts: [
-      { name: 'title', x: 296, y: 8, w: 276, h: 32, color: 2 },
-      { name: 'dest', x: 296, y: 42, w: 276, h: 60, color: 4 },
-      { name: 'stats', x: 296, y: 104, w: 276, h: 114, color: 4, border: 1, padding: 8 },
-      { name: 'status', x: 296, y: 224, w: 276, h: 62, color: 1 },
+      { name: 'title', x: 296, y: 8, w: 274, h: 32, color: 2 },
+      { name: 'dest', x: 296, y: 42, w: 274, h: 60, color: 4 },
+      { name: 'stats', x: 296, y: 104, w: 274, h: 114, color: 4, border: 1, borderColor: 7, radius: 8, padding: 8 },
+      { name: 'status', x: 296, y: 224, w: 274, h: 62, color: 1 },
     ],
   },
   arrival: {
     key: 'arrival',
-    images: [{ name: 'reticle', x: 4, y: 4, w: 136, h: 136 }],
+    images: [{ name: 'reticle', x: M, y: M, w: 136, h: 136 }],
     texts: [
-      { name: 'title', x: 152, y: 8, w: 420, h: 62, color: 4 },
-      { name: 'stats', x: 4, y: 150, w: 568, h: 92, color: 4, border: 1, padding: 8 },
-      { name: 'status', x: 4, y: 254, w: 568, h: 32, color: 1 },
+      { name: 'title', x: 152, y: 8, w: 418, h: 62, color: 4 },
+      card('c0', 0), card('c1', 1), card('c2', 2),
+      STATUS,
     ],
   },
 }
@@ -188,10 +287,10 @@ function navFrame(m: HudModel): TemplateFrame {
       main: `${fmtDistStr(nav.distToManeuver)}  ${act}\n${road ? '进入 ' + road : '沿当前道路'}`,
       then: focus ? ' ' : then,
       prog: focus ? ' ' : `${bar(nav.progress, 18)}  ${Math.round(nav.progress * 100)}%`,
-      stats: focus
-        ? ' '
-        : `剩余  ${fmtDistStr(nav.remaining)}     ${fmtDurationZh(nav.etaSec)}     到达  ${eta}\n${MODE_LABEL[route.mode]}  ·  ${fmtSpeed(m.fix?.speed ?? NaN)} km/h  ·  ${route.destName}`,
-      status: statusLine(m, m.simulated ? '  ·  模拟' : ''),
+      c0: focus ? ' ' : `剩余\n${fmtDistStr(nav.remaining)}`,
+      c1: focus ? ' ' : `用时\n${fmtDurationZh(nav.etaSec)}`,
+      c2: focus ? ' ' : `到达\n${eta}`,
+      status: statusLine(m, `  ·  ${MODE_LABEL[route.mode]} ${fmtSpeed(m.fix?.speed ?? NaN)} km/h${m.simulated ? '  ·  模拟' : ''}`),
     },
     images: {
       arrow: img('arrow', 136, 136, arrowKey, (ctx) => {
@@ -204,7 +303,6 @@ function navFrame(m: HudModel): TemplateFrame {
 
 function cruiseFrame(m: HudModel): TemplateFrame {
   const heading = displayHeading(m)
-  const hq = Math.round(normDeg(heading) / 15) * 15 // 罗盘按 15° 量化，转身时才重发
   const w = m.weather ? `   ${m.weather.temperature}°C ${m.weather.text}` : ''
   const place = m.place
     ? `${m.place.street || m.place.address}\n${[m.place.city, m.place.district].filter(Boolean).join(' · ')}`
@@ -214,42 +312,182 @@ function cruiseFrame(m: HudModel): TemplateFrame {
   if (m.fix && start && haversine(m.fix.p, start) > 30) {
     home = `${dirGlyph(angleDiff(heading, bearing(m.fix.p, start)))} 起点 ${fmtDistStr(haversine(m.fix.p, start))}`
   }
-  const alt = Number.isFinite(m.fix?.altitude ?? NaN) ? `  ·  海拔 ${Math.round(m.fix!.altitude)} m` : ''
+  const alt = Number.isFinite(m.fix?.altitude ?? NaN) ? `${Math.round(m.fix!.altitude)} m` : '--'
+  void w
   return {
     texts: {
-      title: `巡航  ·  ${fmtClock(m.now)}${w}`,
+      title: '巡航  ·  单击后长按打开菜单',
       place,
       heading: `航向  ${compass8(heading, true)} ${String(Math.round(normDeg(heading) / 5) * 5).padStart(3, '0')}°`,
-      stats: `速度  ${fmtSpeed(m.fix?.speed ?? NaN)} km/h${alt}\n${home === ' ' ? '单击后长按打开菜单 · 在手机上选择目的地' : home}`,
+      c0: `速度\n${fmtSpeed(m.fix?.speed ?? NaN)} km/h`,
+      c1: m.weather ? `天气\n${m.weather.temperature}°C ${m.weather.text}` : `海拔\n${alt}`,
+      c2: home !== ' '
+        ? `起点\n${home.replace(' 起点 ', ' ')}`
+        : alt !== '--' ? `海拔\n${alt}` : `GPS 精度\n${m.fix ? `±${Math.round(m.fix.accuracy)} m` : '无信号'}`,
       status: statusLine(m),
     },
-    images: {
-      compass: img('compass', 136, 136, String(hq), (ctx) => {
-        const cx = 68, cy = 68, r = 60
-        ctx.strokeStyle = L(6)
-        ctx.lineWidth = 2
+    images: { minimap: minimap(m) },
+  }
+}
+
+/**
+ * 游戏风格小地图（136×136，车头朝上）：街道线框 + 罗盘刻度 + 位置箭头 + 比例尺。
+ * 位置按约 5px 量化、航向按 15° 量化，并按链路速度限流（至少 3 倍单张耗时）。
+ */
+function minimap(m: HudModel): HTMLCanvasElement {
+  const me = m.fix?.p
+  const heading = displayHeading(m)
+  const hq = Math.round(normDeg(heading) / 15) * 15
+  const sp = m.fix && Number.isFinite(m.fix.speed) ? m.fix.speed : 0
+  const mpp = Math.min(6, Math.max(1.2, 1.2 + sp * 0.12)) // 越快比例尺越大
+  const bm = m.basemap
+  const grid = 5 * mpp
+  const pos = me ? `${Math.round((me[0] * 85000) / grid)},${Math.round((me[1] * 111000) / grid)}` : 'none'
+  const raw = `${pos}|${hq}|${Math.round(mpp * 2)}|${bm ? bm.center.join() + bm.zoom : 'nobm'}|${m.route?.createdAt ?? 0}`
+  const key = gatedKey('minimap', raw, imageInterval(m, 3, 1500, 8000))
+  return img('minimap', 136, 136, key, (ctx) => {
+    const cx = 68, cy = 68, R = 64
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(cx, cy, R - 1, 0, Math.PI * 2)
+    ctx.clip()
+    if (bm && me) drawBasemap(ctx, bm, me, cx, cy, mpp, -hq, 1.6)
+    else {
+      // 没有底图（未填 Key 或加载中）：距离环
+      for (let i = 1; i <= 2; i++) {
+        ctx.strokeStyle = L(3)
+        ctx.lineWidth = 1
         ctx.beginPath()
-        ctx.arc(cx, cy, r, 0, Math.PI * 2)
+        ctx.arc(cx, cy, (R * i) / 3, 0, Math.PI * 2)
         ctx.stroke()
-        for (let a = 0; a < 360; a += 30) {
-          const t = ((a - hq) * Math.PI) / 180
-          const major = a % 90 === 0
-          ctx.strokeStyle = L(major ? 13 : 6)
-          ctx.lineWidth = major ? 3 : 2
-          ctx.beginPath()
-          ctx.moveTo(cx + Math.sin(t) * (r - (major ? 14 : 8)), cy - Math.cos(t) * (r - (major ? 14 : 8)))
-          ctx.lineTo(cx + Math.sin(t) * r, cy - Math.cos(t) * r)
-          ctx.stroke()
-        }
-        const nt = (-hq * Math.PI) / 180
-        ctx.fillStyle = L(15)
-        ctx.font = '900 16px Orbitron, sans-serif'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        ctx.fillText('N', cx + Math.sin(nt) * (r - 26), cy - Math.cos(nt) * (r - 26))
-        pointer(ctx, cx, cy + 4, 22, 0, 15)
-      }),
+      }
+    }
+    if (me) drawRouteOn(ctx, m, me, cx, cy, mpp, -hq, 3)
+    ctx.restore()
+    // 外圈与罗盘刻度
+    ctx.strokeStyle = L(9)
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.arc(cx, cy, R, 0, Math.PI * 2)
+    ctx.stroke()
+    for (let a = 0; a < 360; a += 30) {
+      const t = ((a - hq) * Math.PI) / 180
+      const major = a % 90 === 0
+      ctx.strokeStyle = L(major ? 13 : 7)
+      ctx.lineWidth = major ? 3 : 2
+      ctx.beginPath()
+      ctx.moveTo(cx + Math.sin(t) * (R - (major ? 9 : 5)), cy - Math.cos(t) * (R - (major ? 9 : 5)))
+      ctx.lineTo(cx + Math.sin(t) * R, cy - Math.cos(t) * R)
+      ctx.stroke()
+    }
+    const nt = (-hq * Math.PI) / 180
+    const nx = cx + Math.sin(nt) * (R - 17)
+    const ny = cy - Math.cos(nt) * (R - 17)
+    ctx.fillStyle = '#000'
+    ctx.beginPath()
+    ctx.arc(nx, ny, 8, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = L(15)
+    ctx.font = '900 13px Orbitron, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText('N', nx, ny + 1)
+    chevron(ctx, cx, cy, 9, 0, 15)
+    // 比例尺（半径对应的距离）
+    const radiusM = Math.round((R * mpp) / 10) * 10
+    ctx.fillStyle = '#000'
+    ctx.fillRect(cx - 22, cy + R - 20, 44, 13)
+    ctx.fillStyle = L(9)
+    ctx.font = '700 11px Rajdhani, sans-serif'
+    ctx.fillText(scaleText(radiusM), cx, cy + R - 13)
+  })
+}
+
+// ── 街道地图页：288×288 正北朝上大地图（上下两张图）+ 右侧文字，可缩放 ────────
+
+const smap = createCanvas(288, 288)
+const smapTop = createCanvas(288, 144)
+const smapBottom = createCanvas(288, 144)
+let smapKey = ''
+let smapZoomShown = 0
+
+function streetMapFrame(m: HudModel): TemplateFrame {
+  const me = m.fix?.p
+  const heading = displayHeading(m)
+  const zoom = m.mapZoom
+  const lat = me ? me[1] : 39.9
+  const mpp = metersPerPixel(lat, zoom)
+  const bm = m.mapBasemap && m.mapBasemap.zoom === zoom ? m.mapBasemap : null
+  const grid = 8 * mpp
+  const pos = me ? `${Math.round((me[0] * 85000) / grid)},${Math.round((me[1] * 111000) / grid)}` : 'none'
+  const raw = `${pos}|${Math.round(normDeg(heading) / 30)}|${zoom}|${bm ? bm.center.join() : 'nobm'}|${m.route?.createdAt ?? 0}|${Math.round((m.nav?.progress ?? 0) * 50)}`
+  // 缩放变化立即重画；其余按链路速度限流（至少 5 倍单张耗时，每次要发两张图）
+  const key = gatedKey('streetmap', raw, imageInterval(m, 5, 3000, 15000), zoom !== smapZoomShown)
+  if (key !== smapKey) {
+    smapKey = key
+    smapZoomShown = zoom
+    const ctx = smap.getContext('2d', { willReadFrequently: true })!
+    ctx.fillStyle = '#000'
+    ctx.fillRect(0, 0, 288, 288)
+    if (bm && me) drawBasemap(ctx, bm, me, 144, 144, mpp, 0, 2)
+    else {
+      ctx.fillStyle = L(3)
+      for (let x = 24; x < 288; x += 40) for (let y = 24; y < 288; y += 40) ctx.fillRect(x - 1, y - 1, 2, 2)
+    }
+    if (me) {
+      drawRouteOn(ctx, m, me, 144, 144, mpp, 0, 4)
+      const accR = Math.min(60, (m.fix?.accuracy ?? 0) / mpp)
+      if (accR > 6) {
+        ctx.strokeStyle = L(6)
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.arc(144, 144, accR, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+      chevron(ctx, 144, 144, 11, heading, 15)
+    }
+    brackets(ctx, 2, 2, 284, 284, 16, 8)
+    // 指北针
+    ctx.fillStyle = L(15)
+    ctx.font = '900 14px Orbitron, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText('N', 262, 22)
+    ctx.beginPath()
+    ctx.moveTo(262, 30); ctx.lineTo(257, 42); ctx.lineTo(267, 42); ctx.closePath()
+    ctx.fill()
+    // 比例尺
+    const nice = [20, 50, 100, 200, 500, 1000, 2000]
+    let meters = nice[0]
+    for (const n of nice) if (n / mpp <= 90) meters = n
+    ctx.strokeStyle = L(10)
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(14, 264); ctx.lineTo(14, 270); ctx.lineTo(14 + meters / mpp, 270); ctx.lineTo(14 + meters / mpp, 264)
+    ctx.stroke()
+    ctx.fillStyle = L(10)
+    ctx.font = '700 11px Rajdhani, sans-serif'
+    ctx.textAlign = 'left'
+    ctx.fillText(scaleText(meters), 20 + meters / mpp, 268)
+    smapTop.getContext('2d')!.drawImage(smap, 0, 0, 288, 144, 0, 0, 288, 144)
+    smapBottom.getContext('2d')!.drawImage(smap, 0, 144, 288, 144, 0, 0, 288, 144)
+  }
+  const level = MAP_ZOOMS.indexOf(zoom)
+  const levelBar = MAP_ZOOMS.map((_, i) => (i <= level ? '━' : '─')).join('')
+  const place = m.place ? `${m.place.street || m.place.address}\n${m.place.district || m.place.city}` : m.fix ? '定位中…' : '等待定位'
+  const nav = m.nav
+  return {
+    texts: {
+      title: `街道地图  ${levelBar}`,
+      place,
+      info: [
+        `航向  ${compass8(heading, true)} ${Math.round(normDeg(heading) / 5) * 5}°`,
+        `速度  ${fmtSpeed(m.fix?.speed ?? NaN)} km/h`,
+        nav ? `剩余  ${fmtDistStr(nav.remaining)}` : (bm ? `范围  约 ${scaleText(Math.round((144 * mpp) / 50) * 50)}` : m.hasKey ? '街道加载中…' : '需要高德 Key 显示街道'),
+      ].join('\n'),
+      status: m.toast ? `※ ${m.toast}` : `单击放大 · 长按缩小\n${pageDots(m)}`,
     },
+    images: { mapTop: smapTop, mapBottom: smapBottom },
   }
 }
 
@@ -310,7 +548,7 @@ function goFrame(m: HudModel): TemplateFrame {
   })
   return {
     texts: {
-      title: '前往  ·  快捷目的地      单击选择',
+      title: `前往  ·  ${MODE_LABEL[m.travelMode]}      单击选择`,
       list: rows.join('\n') || '还没有快捷点\n在手机端设置家 / 公司，或把地点「加到眼镜」',
       status: statusLine(m),
     },
@@ -351,8 +589,8 @@ function radarFrame(m: HudModel): TemplateFrame {
       status: statusLine(m),
     },
     images: {
-      radar: img('radar', 140, 140, JSON.stringify([hq, range, blips]), (ctx) => {
-        const cx = 70, cy = 70, R = 64
+      radar: img('radar', 136, 136, JSON.stringify([hq, range, blips]), (ctx) => {
+        const cx = 68, cy = 68, R = 62
         for (let i = 1; i <= 3; i++) {
           ctx.strokeStyle = L(i === 3 ? 7 : 4)
           ctx.lineWidth = i === 3 ? 2 : 1
@@ -420,7 +658,9 @@ function arrivalFrame(m: HudModel): TemplateFrame {
   return {
     texts: {
       title: `已到达\n${a?.name ?? '目的地'}`,
-      stats: a ? `用时  ${fmtDurationZh(a.elapsed)}     距离  ${fmtDistStr(a.distance)}\n均速  ${fmtSpeed(a.avg)} km/h` : ' ',
+      c0: a ? `用时\n${fmtDurationZh(a.elapsed)}` : ' ',
+      c1: a ? `距离\n${fmtDistStr(a.distance)}` : ' ',
+      c2: a ? `均速\n${fmtSpeed(a.avg)} km/h` : ' ',
       status: '单击返回巡航',
     },
     images: {
@@ -561,6 +801,7 @@ export function templateFor(m: HudModel): { spec: TemplateSpec; frame: TemplateF
   if (v === 'radar') return { spec: TEMPLATES.radar!, frame: radarFrame(m) }
   if (v === 'poi' && m.poi) return { spec: TEMPLATES.poi!, frame: poiFrame(m) }
   if (v === 'arrival') return { spec: TEMPLATES.arrival!, frame: arrivalFrame(m) }
+  if (v === 'map') return { spec: TEMPLATES.map!, frame: streetMapFrame(m) }
   if (v === 'overview' && m.route) return { spec: TEMPLATES.overview!, frame: overviewFrame(m) }
   return null
 }
