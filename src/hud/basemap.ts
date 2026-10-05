@@ -71,8 +71,10 @@ export class BasemapManager {
 
 /**
  * 高德静态图是浅色底、白色/黄色道路。这里提取「道路」像素：
- * 高亮且低饱和（普通路）或暖黄色（主干道）→ 映射为暗灰阶；
- * 其余（地块、文字、水系）为黑。若提取比例异常则回退到 Sobel 边缘线框。
+ * 高亮且低饱和（普通路）或暖黄色（主干道）→ 映射为暗灰阶；其余（地块、文字、水系）为黑。
+ * 文字标注和 POI 图标外圈也是白色描边，用 3×3 开运算去掉细描边，再去掉小于 60 像素的孤立块。
+ * （用真实静态图验证：17 级下道路 6–10px 宽，开运算后完整保留。）
+ * 若提取比例异常则回退到 Sobel 边缘线框。
  */
 function process(bmp: ImageBitmap): HTMLCanvasElement {
   const c = createCanvas(bmp.width, bmp.height)
@@ -80,33 +82,84 @@ function process(bmp: ImageBitmap): HTMLCanvasElement {
   ctx.drawImage(bmp, 0, 0)
   const img = ctx.getImageData(0, 0, c.width, c.height)
   const px = img.data
-  const n = c.width * c.height
-  const out = new Uint8ClampedArray(n)
-  let roadCount = 0
+  const w = c.width
+  const h = c.height
+  const n = w * h
+  const white = new Uint8Array(n)
+  const major = new Uint8Array(n)
   for (let i = 0; i < n; i++) {
     const r = px[i * 4]
     const g = px[i * 4 + 1]
     const b = px[i * 4 + 2]
     const max = Math.max(r, g, b)
     const min = Math.min(r, g, b)
-    const isWhite = min >= 250 && max - min < 8
-    const isMajor = r > 235 && g > 180 && b < 175 && r - b > 60
-    if (isMajor) {
-      out[i] = 7 * 17
-      roadCount++
-    } else if (isWhite) {
-      out[i] = 5 * 17
-      roadCount++
-    }
+    if (r > 235 && g > 180 && b < 175 && r - b > 60) major[i] = 1
+    else if (min >= 250 && max - min < 8) white[i] = 1
+  }
+  const roadsW = removeSmall(open3(white, w, h), w, h, 60)
+  const roadsM = open3(major, w, h)
+  const out = new Uint8ClampedArray(n)
+  let roadCount = 0
+  for (let i = 0; i < n; i++) {
+    if (roadsM[i]) { out[i] = 7 * 17; roadCount++ }
+    else if (roadsW[i]) { out[i] = 5 * 17; roadCount++ }
   }
   const ratio = roadCount / n
-  if (ratio < 0.02 || ratio > 0.6) sobel(px, out, c.width, c.height)
+  if (ratio < 0.02 || ratio > 0.6) sobel(px, out, w, h)
   for (let i = 0; i < n; i++) {
     px[i * 4] = px[i * 4 + 1] = px[i * 4 + 2] = out[i]
     px[i * 4 + 3] = 255
   }
   ctx.putImageData(img, 0, 0)
   return c
+}
+
+/** 3×3 开运算（先腐蚀后膨胀），去掉 1–2 像素宽的细线 */
+function open3(m: Uint8Array, w: number, h: number): Uint8Array {
+  const er = new Uint8Array(m.length)
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x
+      er[i] = m[i - w - 1] & m[i - w] & m[i - w + 1] & m[i - 1] & m[i] & m[i + 1] & m[i + w - 1] & m[i + w] & m[i + w + 1]
+    }
+  }
+  const di = new Uint8Array(m.length)
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x
+      di[i] = er[i - w - 1] | er[i - w] | er[i - w + 1] | er[i - 1] | er[i] | er[i + 1] | er[i + w - 1] | er[i + w] | er[i + w + 1]
+    }
+  }
+  return di
+}
+
+/** 去掉面积小于 minArea 的连通块（POI 小图标等） */
+function removeSmall(m: Uint8Array, w: number, h: number, minArea: number): Uint8Array {
+  const out = new Uint8Array(m.length)
+  const seen = new Uint8Array(m.length)
+  const stack: number[] = []
+  const comp: number[] = []
+  for (let s = 0; s < m.length; s++) {
+    if (!m[s] || seen[s]) continue
+    stack.push(s)
+    seen[s] = 1
+    comp.length = 0
+    while (stack.length) {
+      const i = stack.pop()!
+      comp.push(i)
+      const x = i % w
+      const nb = [i - w, i + w, x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1]
+      for (const j of nb) {
+        if (j >= 0 && j < m.length && m[j] && !seen[j]) {
+          seen[j] = 1
+          stack.push(j)
+        }
+      }
+    }
+    if (comp.length >= minArea) for (const i of comp) out[i] = 1
+  }
+  void h
+  return out
 }
 
 function sobel(px: Uint8ClampedArray, out: Uint8ClampedArray, w: number, h: number): void {
