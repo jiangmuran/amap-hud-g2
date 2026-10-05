@@ -3,20 +3,21 @@
 
 import { DeviceConnectType } from '@evenrealities/even_hub_sdk'
 import { AmapClient, QuotaTracker, type Poi, type ReGeo, type Weather } from './amap/api'
-import { haversine, type LngLat } from './geo'
+import { angleDiff, bearing, haversine, type LngLat } from './geo'
 import type { GlassesStatus, HubBridge } from './glasses/bridge'
 import { createCanvas, GlassesDisplay, SCREEN_H, SCREEN_W, type MenuItem } from './glasses/display'
 import { InputNormalizer, type InputAction } from './glasses/input'
 import { BasemapManager } from './hud/basemap'
-import { RADAR_CATEGORIES, type HudModel, type RadarState, type ViewId } from './hud/model'
+import { QUICK_TAG_LABEL, RADAR_CATEGORIES, type HudModel, type QuickItem, type RadarState, type ViewId } from './hud/model'
+import { fmtDistStr } from './hud/format'
 import { buildTextFrame } from './hud/textHud'
-import { renderHud } from './hud/views'
+import { poiMeta, renderHud } from './hud/views'
 import { demoRouteJson, DEMO_ORIGIN } from './nav/demo'
 import { LocationService, RouteSimulator } from './nav/location'
 import { parseRoute, type Route, type TravelMode } from './nav/route'
 import { RouteTracker, type NavState } from './nav/tracker'
 import { TripRecorder } from './nav/trip'
-import { loadSettings, pushHistory, saveSettings, type KV, type Place, type Settings } from './storage'
+import { loadSettings, pushHistory, samePlace, saveSettings, type KV, type Place, type Settings } from './storage'
 
 const MENU = {
   stop: 1,
@@ -26,6 +27,7 @@ const MENU = {
   basemap: 5,
   radar: 6,
   home: 7,
+  go: 8,
 } as const
 
 const MENU_ITEMS: MenuItem[] = [
@@ -36,7 +38,19 @@ const MENU_ITEMS: MenuItem[] = [
   { id: MENU.basemap, name: '街道底图 开/关' },
   { id: MENU.radar, name: '周边扫描' },
   { id: MENU.home, name: '返回起点' },
+  { id: MENU.go, name: '快捷前往' },
 ]
+
+const ARROWS = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖']
+/** 相对方向箭头（只用固件字体里存在的字符） */
+function dirArrow(rel: number): string {
+  return ARROWS[Math.round((((rel % 360) + 360) % 360) / 45) % 8]
+}
+
+type Picker =
+  | { kind: 'go'; items: QuickItem[] }
+  | { kind: 'poi'; items: Poi[] }
+  | { kind: 'category' }
 
 const REFRESH_MS = { eco: 2000, standard: 1000, fast: 450 }
 
@@ -70,6 +84,11 @@ export class HudApp {
   place?: ReGeo
   radar: RadarState = { category: 0, pois: [], loading: false }
   arrival?: HudModel['arrival']
+  /** 眼镜上打开的原生列表 */
+  picker?: Picker
+  /** POI 详情卡（模态） */
+  poiDetail?: Poi
+  private planningName?: string
 
   viewIndex = 0
   overviewZoom: 'fit' | 'near' = 'fit'
@@ -154,9 +173,9 @@ export class HudApp {
   // ── 视图 ─────────────────────────────────────────────────────────
 
   views(): ViewId[] {
-    if (this.arrival) return ['arrival', 'telemetry', 'overview', 'radar']
-    if (this.route) return ['nav', 'overview', 'roadbook', 'telemetry', 'radar']
-    return ['cruise', 'overview', 'telemetry', 'radar']
+    if (this.arrival) return ['arrival', 'go', 'radar', 'telemetry', 'overview']
+    if (this.route) return ['nav', 'overview', 'roadbook', 'telemetry', 'radar', 'go']
+    return ['cruise', 'go', 'radar', 'overview', 'telemetry']
   }
 
   get view(): ViewId {
@@ -182,6 +201,26 @@ export class HudApp {
     const views = this.views()
     // 对话框挂起时又收到普通输入，说明对话框已关闭（部分宿主不发前后台事件）
     if (this.exitDialogPending && ['next', 'prev', 'click', 'longpress'].includes(a.kind)) this.endExitDialog()
+
+    // 原生列表打开时：单击=选中，双击=返回，滑动由固件移动高亮
+    if (this.picker) {
+      if (a.kind === 'click') return void this.onPick(a.index ?? 0)
+      if (a.kind === 'double') return void this.closePicker()
+      if (a.kind === 'next' || a.kind === 'prev' || a.kind === 'longpress') return
+    }
+    // POI 详情卡：单击导航，双击/滑动返回
+    if (this.poiDetail && !this.picker) {
+      if (a.kind === 'click') {
+        const p = this.poiDetail
+        this.poiDetail = undefined
+        return void this.navigateTo({ name: p.name, address: p.address, location: p.entrance ?? p.location, id: p.id })
+      }
+      if (a.kind === 'double' || a.kind === 'next' || a.kind === 'prev') {
+        this.poiDetail = undefined
+        return this.changed()
+      }
+    }
+
     switch (a.kind) {
       case 'next':
         this.viewIndex = (this.viewIndex + 1) % views.length
@@ -256,7 +295,11 @@ export class HudApp {
         break
       }
       case 'radar':
-        void this.scanRadar(this.radar.fetchedAt !== undefined && !this.radar.loading)
+        if (this.radar.pois.length && !this.radar.loading) void this.openPoiPicker()
+        else void this.scanRadar(false)
+        break
+      case 'go':
+        void this.openGoPicker()
         break
       case 'arrival':
         this.finishArrival()
@@ -308,8 +351,126 @@ export class HudApp {
       case MENU.home:
         await this.navigateHome()
         break
+      case MENU.go:
+        this.poiDetail = undefined
+        this.setView('go')
+        await this.openGoPicker()
+        break
     }
     this.changed()
+  }
+
+  // ── 眼镜端选择：快捷点 / 周边地点 / 类别 ─────────────────────────
+
+  /** 眼镜「前往」页：家、公司、快捷点，再补最近去过的地方 */
+  quickItems(): QuickItem[] {
+    const s = this.settings
+    const out: QuickItem[] = []
+    const add = (tag: QuickItem['tag'], p?: Place) => {
+      if (p && !out.some((q) => samePlace(q.place, p))) out.push({ tag, place: p })
+    }
+    add('home', s.home)
+    add('work', s.work)
+    for (const p of s.pins) add('pin', p)
+    for (const p of s.history) {
+      if (out.length >= 10) break
+      add('recent', p)
+    }
+    return out.slice(0, 10)
+  }
+
+  private relLabel(p: LngLat): string {
+    const me = this.loc.last
+    if (!me) return ''
+    const rel = angleDiff(me.heading || 0, bearing(me.p, p))
+    return ` ${fmtDistStr(haversine(me.p, p))} ${dirArrow(rel)}`
+  }
+
+  async openGoPicker(): Promise<void> {
+    const items = this.quickItems()
+    if (!items.length) return this.toast('还没有快捷点，请在手机端添加')
+    this.picker = { kind: 'go', items }
+    await this.display.showList({
+      title: '前往 · 选择目的地      双击返回',
+      items: items.map((q) => `${QUICK_TAG_LABEL[q.tag]}  ${q.place.name}${this.relLabel(q.place.location)}`),
+    })
+    this.changed()
+  }
+
+  async openPoiPicker(): Promise<void> {
+    const cat = RADAR_CATEGORIES[this.radar.category]
+    const pois = this.radar.pois.slice(0, 15)
+    this.picker = { kind: 'poi', items: pois }
+    await this.display.showList({
+      title: `周边 · ${cat.name}      双击返回`,
+      items: [
+        `⇔ 切换类别（当前：${cat.name}）`,
+        ...pois.map((p) => {
+          const meta = poiMeta(p)
+          return `${p.name}${this.relLabel(p.entrance ?? p.location)}${meta ? '  ' + meta : ''}`
+        }),
+      ],
+    })
+    this.changed()
+  }
+
+  async openCategoryPicker(): Promise<void> {
+    this.picker = { kind: 'category' }
+    await this.display.showList({
+      title: '选择周边类别      双击返回',
+      items: RADAR_CATEGORIES.map((c, i) => `${i === this.radar.category ? '●' : '○'}  ${c.name}`),
+    })
+    this.changed()
+  }
+
+  private async onPick(index: number): Promise<void> {
+    const pk = this.picker
+    if (!pk) return
+    if (pk.kind === 'go') {
+      const q = pk.items[index]
+      await this.closePicker()
+      if (q) await this.navigateTo(q.place)
+    } else if (pk.kind === 'poi') {
+      if (index === 0) return this.openCategoryPicker()
+      const p = pk.items[index - 1]
+      await this.closePicker()
+      if (p) {
+        this.poiDetail = p
+        this.changed()
+      }
+    } else {
+      await this.closePicker()
+      if (index >= 0 && index < RADAR_CATEGORIES.length) {
+        this.radar = { ...this.radar, category: index, pois: [], fetchedAt: undefined }
+        this.setView('radar')
+        await this.scanRadar(false)
+      }
+    }
+  }
+
+  async closePicker(): Promise<void> {
+    if (!this.picker) return
+    this.picker = undefined
+    await this.display.hideList()
+    this.changed()
+  }
+
+  /** 从眼镜端直接规划并开始导航（使用默认出行方式） */
+  async navigateTo(place: Place): Promise<void> {
+    if (!this.api.hasKey()) return this.toast('请先在手机端填写高德 Key')
+    this.planningName = place.name
+    this.toast(`正在规划：${place.name}`, 8000)
+    this.changed()
+    try {
+      const [r] = await this.planRoutes(place, this.settings.travelMode)
+      this.toastMsg = undefined
+      this.startNavigation(r, place)
+    } catch (e) {
+      this.toast(`规划失败：${(e as Error).message}`, 4000)
+    } finally {
+      this.planningName = undefined
+      this.changed()
+    }
   }
 
   // ── 定位 ─────────────────────────────────────────────────────────
@@ -542,7 +703,7 @@ export class HudApp {
 
   model(): HudModel {
     const now = Date.now()
-    let view = this.view
+    let view: ViewId = this.poiDetail ? 'poi' : this.view
     const toast = this.toastMsg && this.toastMsg.until > now ? this.toastMsg.text : undefined
     if (
       view === 'nav' && this.settings.focusMode && this.nav && this.route && !toast &&
@@ -574,6 +735,9 @@ export class HudApp {
       hasKey: this.api.hasKey(),
       locationSource: this.loc.simulating ? 'sim' : this.loc.source,
       arrival: this.arrival,
+      quick: this.quickItems(),
+      poi: this.poiDetail,
+      planning: this.planningName,
     }
   }
 

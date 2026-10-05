@@ -88,6 +88,18 @@ export interface Poi extends Place {
   type?: string
   distance?: number
   tel?: string
+  /** 评分（高德仅对餐饮/酒店/景点/影院返回） */
+  rating?: number
+  /** 人均消费（元） */
+  cost?: number
+  /** 今日营业时间 */
+  openToday?: string
+  /** 楼层显示值，如 F3 / B1 */
+  floor?: string
+  /** 所属商圈 */
+  area?: string
+  /** 导航入口坐标（比 POI 中心点更适合作为目的地） */
+  entrance?: LngLat
 }
 
 export interface Weather {
@@ -193,7 +205,7 @@ export class AmapClient {
       keywords,
       region: opts.region,
       page_size: opts.pageSize ?? 10,
-      show_fields: 'business',
+      show_fields: 'business,indoor,navi',
     }, 'search')
     return parsePois(json.pois)
   }
@@ -206,6 +218,7 @@ export class AmapClient {
       radius: opts.radius ?? 1000,
       sortrule: 'distance',
       page_size: opts.pageSize ?? 10,
+      show_fields: 'business,indoor,navi',
     }, 'search')
     return parsePois(json.pois)
   }
@@ -288,11 +301,15 @@ export class AmapClient {
   }
 }
 
-function parsePois(raw: unknown): Poi[] {
+export function parsePois(raw: unknown): Poi[] {
   const arr: any[] = Array.isArray(raw) ? raw : []
   return arr.flatMap((p): Poi[] => {
     const location = parseLngLat(str(p.location))
     if (!location || !str(p.name)) return []
+    const biz = p.business ?? {}
+    const indoor = p.indoor ?? {}
+    const rating = Number(str(biz.rating))
+    const cost = Number(str(biz.cost))
     return [{
       name: str(p.name),
       address: [str(p.adname), str(p.address)].filter(Boolean).join(' '),
@@ -300,6 +317,20 @@ function parsePois(raw: unknown): Poi[] {
       id: str(p.id),
       type: str(p.type),
       distance: p.distance !== undefined && p.distance !== '' ? Number(p.distance) : undefined,
+      tel: str(biz.tel) || undefined,
+      rating: rating > 0 ? rating : undefined,
+      cost: cost > 0 ? cost : undefined,
+      openToday: str(biz.opentime_today) || undefined,
+      area: str(biz.business_area) || undefined,
+      floor: str(indoor.truefloor) || floorFromIndex(str(indoor.floor)),
+      entrance: parseLngLat(str(p.navi?.entr_location)) ?? undefined,
     }]
   })
+}
+
+/** indoor.floor 是楼层序号（负数为地下），没有 truefloor 时转换成 F3 / B1 */
+function floorFromIndex(f: string): string | undefined {
+  const n = Number(f)
+  if (!f || !Number.isFinite(n) || n === 0) return undefined
+  return n > 0 ? `F${n}` : `B${-n}`
 }

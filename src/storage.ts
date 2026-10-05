@@ -52,6 +52,8 @@ export interface Settings {
   locationIsWgs: boolean
   home?: Place
   work?: Place
+  /** 显示在眼镜「前往」页的快捷点 */
+  pins: Place[]
   history: Place[]
 }
 
@@ -65,6 +67,7 @@ export const DEFAULT_SETTINGS: Settings = {
   refresh: 'standard',
   platform: '',
   locationIsWgs: true,
+  pins: [],
   history: [],
 }
 
@@ -85,6 +88,17 @@ export async function loadSettings(kv: KV): Promise<Settings> {
 
 export async function saveSettings(kv: KV, s: Settings): Promise<void> {
   await kv.set(SETTINGS_KEY, JSON.stringify(s))
+}
+
+export const MAX_PINS = 8
+
+export function isPinned(s: Settings, p: Place): boolean {
+  return s.pins.some((x) => samePlace(x, p))
+}
+
+export function samePlace(a: Place, b: Place): boolean {
+  if (a.id && b.id) return a.id === b.id
+  return a.name === b.name && Math.abs(a.location[0] - b.location[0]) < 1e-4 && Math.abs(a.location[1] - b.location[1]) < 1e-4
 }
 
 export function pushHistory(s: Settings, p: Place): void {

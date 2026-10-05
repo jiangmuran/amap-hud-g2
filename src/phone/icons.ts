@@ -24,5 +24,7 @@ export const icon = {
   arrowTurn: (s = 18) => svg('<path d="M6 20v-7a4 4 0 0 1 4-4h8M14 5l4 4-4 4"/>', s),
   sparkles: (s = 18) => svg('<path d="M12 3.5 13.6 8 18 9.5l-4.4 1.6L12 15.5l-1.6-4.4L6 9.5 10.4 8Z"/><path d="M18.5 15.5 19.2 17.3 21 18l-1.8.7-.7 1.8-.7-1.8L16 18l1.8-.7Z"/>', s),
   phone: (s = 18) => svg('<rect x="6.5" y="2.5" width="11" height="19" rx="2.6"/><path d="M10.5 18.5h3"/>', s),
+  star: (s = 18) => svg('<path d="m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8Z"/>', s, true),
+  minus: (s = 22) => svg('<circle cx="12" cy="12" r="10" fill="currentColor" stroke="none"/><path d="M7.5 12h9" stroke="#fff" stroke-width="2.2"/>', s),
   key: (s = 18) => svg('<circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16.5 6.5l2.5 2.5M14.5 8.5l2 2"/>', s),
 }

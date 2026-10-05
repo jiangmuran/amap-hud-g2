@@ -9,7 +9,7 @@ import { OsEventTypeList, type EvenHubEvent } from '@evenrealities/even_hub_sdk'
 export type InputAction =
   | { kind: 'prev' }
   | { kind: 'next' }
-  | { kind: 'click' }
+  | { kind: 'click'; index?: number }
   | { kind: 'double' }
   | { kind: 'longpress' }
   | { kind: 'menu'; id: number }
@@ -60,7 +60,12 @@ export class InputNormalizer {
     if (has(OsEventTypeList.FOREGROUND_ENTER_EVENT)) return this.gate('fg', this.dedupeMs) ? { kind: 'foreground' } : null
     if (has(OsEventTypeList.FOREGROUND_EXIT_EVENT)) return this.gate('bg', this.dedupeMs) ? { kind: 'background' } : null
     if (has(OsEventTypeList.SYSTEM_EXIT_EVENT) || has(OsEventTypeList.ABNORMAL_EXIT_EVENT)) return { kind: 'exit' }
-    if (has(OsEventTypeList.CLICK_EVENT)) return this.gate('click', 200) ? { kind: 'click' } : null
+    if (has(OsEventTypeList.CLICK_EVENT)) {
+      if (!this.gate('click', 200)) return null
+      // 原生列表的点击带选中项；第 0 项的 index 常被省略
+      if (e.listEvent) return { kind: 'click', index: e.listEvent.currentSelectItemIndex ?? 0 }
+      return { kind: 'click' }
+    }
     return null
   }
 }

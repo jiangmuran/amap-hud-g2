@@ -7,7 +7,8 @@ import type { MockBridge } from '../glasses/bridge'
 import { maneuverIcon } from '../hud/gfx'
 import { fmtClock, fmtDistStr, fmtDurationZh, fmtSpeed } from '../hud/format'
 import { MANEUVER_LABEL, MODE_LABEL, type Route, type TravelMode } from '../nav/route'
-import type { Place, RefreshProfile } from '../storage'
+import { isPinned, MAX_PINS, samePlace, type Place, type RefreshProfile } from '../storage'
+import { poiMeta } from '../hud/views'
 import { icon } from './icons'
 
 const esc = (s: string | number | undefined | null) =>
@@ -29,6 +30,7 @@ const MENU_ACTIONS = [
   { id: 5, name: '街道底图 开/关' },
   { id: 6, name: '周边扫描' },
   { id: 7, name: '返回起点' },
+  { id: 8, name: '快捷前往' },
 ]
 
 type SheetKind = 'place' | 'settings' | 'menu' | 'platform' | null
@@ -38,7 +40,8 @@ export class PhoneUI {
   private results: Poi[] | null = null
   private searching = false
   private searchError = ''
-  private selected?: Place
+  private selected?: Poi
+  private editPins = false
   private mode: TravelMode
   private routes: Route[] = []
   private routeIdx = 0
@@ -166,7 +169,8 @@ export class PhoneUI {
       if (t.dataset.place !== undefined) {
         const key = t.dataset.place
         const s = this.app.settings
-        const p = key === 'home' ? s.home : key === 'work' ? s.work : s.history[Number(key)]
+        const p = key === 'home' ? s.home : key === 'work' ? s.work : key.startsWith('pin') ? s.pins[Number(key.slice(3))] : s.history[Number(key)]
+        if (key.startsWith('pin') && this.editPins) return
         if (p) this.openPlace(p)
         else this.showToast(key === 'home' ? '搜索地点后可「设为家」' : '搜索地点后可「设为公司」')
         return
@@ -221,6 +225,30 @@ export class PhoneUI {
       case 'stop':
         this.app.stopNavigation()
         return this.showToast('导航已结束')
+      case 'toggle-pin':
+        if (this.selected) {
+          const p: Place = { name: this.selected.name, address: this.selected.address, location: this.selected.entrance ?? this.selected.location, id: this.selected.id }
+          if (isPinned(s, p) || isPinned(s, this.selected)) {
+            void this.app.updateSettings({ pins: s.pins.filter((x) => !samePlace(x, p) && !samePlace(x, this.selected!)) })
+            this.showToast('已从眼镜快捷点移除')
+          } else if (s.pins.length >= MAX_PINS) {
+            this.showToast(`眼镜快捷点最多 ${MAX_PINS} 个`)
+          } else {
+            void this.app.updateSettings({ pins: [...s.pins, p] })
+            this.showToast('已添加到眼镜「前往」页')
+          }
+          this.renderSheet()
+        }
+        return
+      case 'edit-pins':
+        this.editPins = !this.editPins
+        this.contentKey = ''
+        return this.render()
+      case 'unpin': {
+        const i = Number(el.dataset.i)
+        void this.app.updateSettings({ pins: s.pins.filter((_, j) => j !== i) })
+        return
+      }
       case 'set-home':
       case 'set-work':
         if (this.selected) {
@@ -290,7 +318,8 @@ export class PhoneUI {
     this.planError = ''
     this.renderSheet()
     try {
-      this.routes = await this.app.planRoutes(this.selected, this.mode)
+      const dest = this.selected.entrance ? { ...this.selected, location: this.selected.entrance } : this.selected
+      this.routes = await this.app.planRoutes(dest, this.mode)
       this.routeIdx = 0
     } catch (e) {
       this.routes = []
@@ -304,7 +333,8 @@ export class PhoneUI {
   private start(): void {
     const r = this.routes[this.routeIdx]
     if (!r || !this.selected) return
-    this.app.startNavigation(r, this.selected)
+    const dest: Place = { name: this.selected.name, address: this.selected.address, location: this.selected.entrance ?? this.selected.location, id: this.selected.id }
+    this.app.startNavigation(r, dest)
     this.closeSheet()
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -464,11 +494,11 @@ export class PhoneUI {
   private renderContent(): void {
     const el = this.root.querySelector('#content')!
     const active = document.activeElement
-    if (active && el.contains(active)) return
+    if (active instanceof HTMLInputElement && el.contains(active)) return
     const s0 = this.app.settings
     const key = JSON.stringify([
       this.searching, this.searchError, this.results?.map((p) => p.id || p.name) ?? null,
-      s0.home?.name, s0.work?.name, s0.history.map((h) => h.name), this.app.views(), this.app.view,
+      s0.home?.name, s0.work?.name, s0.history.map((h) => h.name), s0.pins.map((h) => h.name), this.editPins, this.app.views(), this.app.view,
     ])
     if (key === this.contentKey) return
     this.contentKey = key
@@ -485,7 +515,7 @@ export class PhoneUI {
         ${this.results.map((p, i) => `
           <button class="cell" data-poi="${i}">
             <div class="badge-icon red">${icon.pin(17)}</div>
-            <div class="grow"><div class="title">${esc(p.name)}</div><div class="sub">${esc(p.address || p.type || '')}</div></div>
+            <div class="grow"><div class="title">${esc(p.name)}</div><div class="sub">${poiMeta(p) ? `<span style="color:var(--orange)">${esc(poiMeta(p))}</span> · ` : ''}${esc(p.address || p.type || '')}</div></div>
             ${p.distance !== undefined ? `<span class="detail">${fmtDistStr(p.distance)}</span>` : ''}
             <span class="accessory">${icon.chevronRight()}</span>
           </button>`).join('')}
@@ -501,6 +531,17 @@ export class PhoneUI {
           <button data-place="home"><span class="q-ic ${s.home ? '' : 'empty'}" style="${s.home ? 'background:var(--tint)' : ''}">${icon.house(24)}</span><span class="t">${s.home ? '家' : '添加家'}</span></button>
           <button data-place="work"><span class="q-ic ${s.work ? '' : 'empty'}" style="${s.work ? 'background:var(--orange)' : ''}">${icon.briefcase(24)}</span><span class="t">${s.work ? '公司' : '添加公司'}</span></button>
         </div>
+      </section>
+      <section class="section">
+        <div class="section-header" style="display:flex;justify-content:space-between"><span>眼镜快捷点 · ${s.pins.length}/${MAX_PINS}</span>${s.pins.length ? `<button class="link" style="text-transform:none" data-act="edit-pins">${this.editPins ? '完成' : '编辑'}</button>` : ''}</div>
+        ${s.pins.length ? `<div class="group with-icon${this.editPins ? ' editing' : ''}">
+          ${s.pins.map((p, i) => `<div class="cell tappable" data-place="pin${i}" role="button">
+            ${this.editPins ? `<button data-act="unpin" data-i="${i}" style="color:var(--red)" aria-label="移除">${icon.minus(22)}</button>` : ''}
+            <div class="badge-icon orange">${icon.star(16)}</div>
+            <div class="grow"><div class="title">${esc(p.name)}</div>${p.address ? `<div class="sub">${esc(p.address)}</div>` : ''}</div>
+            ${this.editPins ? '' : `<span class="accessory">${icon.chevronRight()}</span>`}</div>`).join('')}
+        </div>` : `<div class="group"><div class="cell"><div class="grow sub" style="white-space:normal;color:var(--label-2);font-size:15px">搜索地点后点「加到眼镜」，就能在眼镜「前往」页直接选择并开始导航。</div></div></div>`}
+        <p class="section-footer">眼镜「前往」页依次显示：家、公司、快捷点、最近去过的地方。</p>
       </section>
       ${history.length ? `<section class="section">
         <div class="section-header" style="display:flex;justify-content:space-between"><span>最近</span><button class="link" style="text-transform:none" data-act="clear-history">清除</button></div>
@@ -595,9 +636,19 @@ export class PhoneUI {
           </div>
           <span class="check"></span>
         </button>`).join('')}</div>`
+    const pinned = isPinned(this.app.settings, p) || (p.entrance ? isPinned(this.app.settings, { ...p, location: p.entrance }) : false)
     const fav = `<div class="btn-row" style="margin-top:10px">
-        <button class="btn gray" data-act="set-home">${icon.house(18)}设为家</button>
-        <button class="btn gray" data-act="set-work">${icon.briefcase(18)}设为公司</button></div>`
+        <button class="btn gray" data-act="set-home" style="padding:0 8px">${icon.house(17)}设为家</button>
+        <button class="btn gray" data-act="set-work" style="padding:0 8px">${icon.briefcase(17)}设为公司</button>
+        <button class="btn ${pinned ? 'tinted' : 'gray'}" data-act="toggle-pin" style="padding:0 8px">${icon.star(16)}${pinned ? '已加眼镜' : '加到眼镜'}</button></div>`
+    const chips: [string, string][] = []
+    if (p.rating) chips.push(['评分', `★ ${p.rating.toFixed(1)}`])
+    if (p.cost) chips.push(['人均', `¥${Math.round(p.cost)}`])
+    if (p.floor) chips.push(['楼层', p.floor])
+    if (p.openToday) chips.push(['今日营业', p.openToday])
+    const chipsHtml = chips.length
+      ? `<div class="chips">${chips.map(([k, v]) => `<div class="chip"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`).join('')}</div>`
+      : ''
     return `
       <div class="grabber"></div>
       <div class="sheet-head"><span class="side"></span><h2></h2><span class="side r"><button class="circle-btn" data-act="close" aria-label="关闭">${icon.xmark(12)}</button></span></div>
@@ -605,6 +656,7 @@ export class PhoneUI {
         <div class="place-head">
           <h3>${esc(p.name)}</h3>
           <p>${esc(p.address || '')}${me ? ` · 距你 ${fmtDistStr(haversineSafe(me, p.location))}` : ''}</p>
+          ${chipsHtml}
         </div>
         <div class="section">${this.modeSegment()}</div>
         <div class="section"><div class="section-header">路线</div>${routesHtml}</div>
@@ -760,7 +812,7 @@ function haversineSafe(a: [number, number], b: [number, number]): number {
 }
 
 function viewName(v: string): string {
-  return ({ nav: '导航', overview: '全局地图', roadbook: '路书', telemetry: '仪表', radar: '周边雷达', cruise: '巡航', arrival: '到达', focus: '专注' } as Record<string, string>)[v] ?? v
+  return ({ nav: '导航', overview: '全局地图', roadbook: '路书', telemetry: '仪表', radar: '周边雷达', go: '前往', poi: '地点详情', cruise: '巡航', arrival: '到达', focus: '专注' } as Record<string, string>)[v] ?? v
 }
 
 function viewDesc(v: string): string {
@@ -769,7 +821,8 @@ function viewDesc(v: string): string {
     overview: '全程路线，单击切换附近',
     roadbook: '后续路段列表，单击翻页',
     telemetry: '速度表、行程、海拔、航向',
-    radar: '附近地铁/卫生间/便利店…',
+    radar: '附近地铁/超市/美食，含评分与楼层',
+    go: '家、公司、快捷点，眼镜上直接选择导航',
     cruise: '罗盘航向带、地址、天气、返航',
     arrival: '到达与行程总结',
   } as Record<string, string>)[v] ?? ''

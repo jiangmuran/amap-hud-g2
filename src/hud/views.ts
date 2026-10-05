@@ -6,10 +6,11 @@ import { MANEUVER_LABEL, MODE_LABEL, type Route } from '../nav/route'
 import { SCREEN_H, SCREEN_W } from '../glasses/display'
 import {
   battery, brackets, chamferRect, chevron, clear, diamond, ellipsize, font, hatch, L, line, maneuverIcon,
-  numUnit, reticle, segBar, signal, text, type Ctx,
+  measure, numUnit, reticle, segBar, signal, text, type Ctx,
 } from './gfx'
 import { fmtClock, fmtDist, fmtDistStr, fmtDuration, fmtElapsed, fmtSpeed, kmh } from './format'
-import { displayHeading, RADAR_CATEGORIES, VIEW_LABEL, type HudModel } from './model'
+import { displayHeading, QUICK_TAG_LABEL, RADAR_CATEGORIES, VIEW_LABEL, type HudModel } from './model'
+import type { Poi } from '../amap/api'
 
 interface Rect { x: number; y: number; w: number; h: number }
 
@@ -21,6 +22,8 @@ export function renderHud(ctx: Ctx, m: HudModel): void {
     case 'roadbook': drawRoadbook(ctx, m); break
     case 'telemetry': drawTelemetry(ctx, m); break
     case 'radar': drawRadar(ctx, m); break
+    case 'go': drawGo(ctx, m); break
+    case 'poi': drawPoiDetail(ctx, m); break
     case 'arrival': drawArrival(ctx, m); break
     case 'focus': drawFocus(ctx, m); break
     default: drawCruise(ctx, m)
@@ -607,10 +610,12 @@ function drawRadar(ctx: Ctx, m: HudModel): void {
       chevron(ctx, 556, y + 17, 7, b, 12)
     }
     text(ctx, fmtDistStr(d), 544, y + 23, { font: font.num(13), level: 12, align: 'right' })
-    if (p.address) text(ctx, p.address, 320, y + 41, { font: font.cjk(11), level: 6, maxWidth: 240 })
+    const meta = poiMeta(p)
+    if (meta) text(ctx, meta, 320, y + 41, { font: font.cjk(12), level: 10, maxWidth: 246 })
+    else if (p.address) text(ctx, p.address, 320, y + 41, { font: font.cjk(11), level: 6, maxWidth: 240 })
   })
   pageDots(ctx, 290, 282, m)
-  text(ctx, '单击换类别', 566, 282, { font: font.cjk(11), level: 6, align: 'right' })
+  text(ctx, list.length ? '单击选择地点 / 换类别' : '单击扫描', 566, 282, { font: font.cjk(11), level: 6, align: 'right' })
 }
 
 // ── 巡航（无路线）─────────────────────────────────────────────────
@@ -718,4 +723,149 @@ function drawFocus(ctx: Ctx, m: HudModel): void {
   numUnit(ctx, d.v, d.u, 48, 30, 18, { level: 11, unitLevel: 7 })
   ctx.font = font.cjk(14)
   text(ctx, ellipsize(ctx, nextRoadName(m), 180), 48, 50, { font: font.cjk(14), level: 7 })
+}
+
+// ── POI 元信息：评分 / 人均 / 楼层 / 营业时间 ─────────────────────
+
+export function poiMeta(p: Poi, withHours = false): string {
+  const parts: string[] = []
+  if (p.rating) parts.push(`★${p.rating.toFixed(1)}`)
+  if (p.cost) parts.push(`¥${Math.round(p.cost)}`)
+  if (p.floor) parts.push(p.floor)
+  if (withHours && p.openToday) parts.push(p.openToday)
+  return parts.join(' · ')
+}
+
+function stars(ctx: Ctx, x: number, y: number, rating: number, size: number): number {
+  ctx.font = font.cjk(size)
+  ctx.textBaseline = 'alphabetic'
+  ctx.textAlign = 'left'
+  let cx = x
+  for (let i = 0; i < 5; i++) {
+    const fill = rating - i
+    ctx.fillStyle = L(fill >= 0.75 ? 15 : fill >= 0.25 ? 9 : 4)
+    ctx.fillText(fill >= 0.25 ? '★' : '☆', cx, y)
+    cx += size * 1.05
+  }
+  return cx - x
+}
+
+/** 按宽度折行（中文逐字） */
+function wrap(ctx: Ctx, s: string, f: string, maxWidth: number, maxLines: number): string[] {
+  ctx.font = f
+  const lines: string[] = []
+  let cur = ''
+  for (const ch of s) {
+    if (ctx.measureText(cur + ch).width > maxWidth) {
+      lines.push(cur)
+      cur = ch
+      if (lines.length === maxLines) break
+    } else cur += ch
+  }
+  if (lines.length < maxLines && cur) lines.push(cur)
+  if (lines.length === maxLines && lines.join('').length < [...s].length) lines[maxLines - 1] = ellipsize(ctx, lines[maxLines - 1] + '…', maxWidth)
+  return lines
+}
+
+// ── 前往：快捷点 ──────────────────────────────────────────────────
+
+function drawGo(ctx: Ctx, m: HudModel): void {
+  text(ctx, 'GO', 10, 22, { font: font.num(18, 900), level: 15 })
+  text(ctx, '快捷前往', 48, 21, { font: font.cjk(15), level: 9 })
+  statusCluster(ctx, 566, 9, m)
+  line(ctx, 8, 30, 568, 30, 4)
+  const me = m.fix?.p
+  const heading = displayHeading(m)
+  const items = m.quick.slice(0, 5)
+  if (m.planning) {
+    text(ctx, `正在规划前往 ${m.planning}…`, 288, 150, { font: font.cjk(20), level: 13, align: 'center', maxWidth: 540 })
+    return
+  }
+  if (!items.length) {
+    text(ctx, '还没有快捷点', 288, 130, { font: font.cjk(22, 700), level: 12, align: 'center' })
+    text(ctx, '在手机端设置家/公司，或把地点「添加到眼镜」', 288, 164, { font: font.cjk(15), level: 8, align: 'center' })
+  }
+  items.forEach((q, i) => {
+    const y = 36 + i * 46
+    chamferRect(ctx, 10, y + 7, 44, 30, 6, q.tag === 'recent' ? 6 : 12, 1.5)
+    text(ctx, QUICK_TAG_LABEL[q.tag], 32, y + 28, { font: font.cjk(q.tag === 'recent' || q.tag === 'work' ? 13 : 16, 700), level: 15, align: 'center' })
+    text(ctx, q.place.name, 66, y + 28, { font: font.cjk(19, 700), level: 15, maxWidth: 330 })
+    if (me) {
+      const d = haversine(me, q.place.location)
+      const b = angleDiff(heading, bearing(me, q.place.location))
+      text(ctx, fmtDistStr(d), 520, y + 28, { font: font.num(15), level: 13, align: 'right' })
+      chevron(ctx, 548, y + 22, 8, b, 13)
+    }
+    if (i < items.length - 1) line(ctx, 66, y + 44, 566, y + 44, 3)
+  })
+  pageDots(ctx, 10, 282, m)
+  text(ctx, items.length ? '单击选择目的地' : '', 566, 282, { font: font.cjk(11), level: 6, align: 'right' })
+}
+
+// ── POI 详情卡 ────────────────────────────────────────────────────
+
+function drawPoiDetail(ctx: Ctx, m: HudModel): void {
+  const p = m.poi
+  if (!p) return
+  const me = m.fix?.p
+  const heading = displayHeading(m)
+  const cat = RADAR_CATEGORIES[m.radar.category]
+  brackets(ctx, 4, 4, 568, 280, 16, 8)
+  text(ctx, `POI · ${cat.short}`, 18, 30, { font: font.label(15, 700), level: 10 })
+  text(ctx, cat.name, 108, 29, { font: font.cjk(13), level: 7 })
+
+  const nameLines = wrap(ctx, p.name, font.cjk(26, 700), 360, 2)
+  nameLines.forEach((ln, i) => text(ctx, ln, 18, 68 + i * 32, { font: font.cjk(26, 700), level: 15 }))
+  let y = 68 + nameLines.length * 32 + 4
+
+  if (p.rating) {
+    const w = stars(ctx, 18, y, p.rating, 20)
+    text(ctx, p.rating.toFixed(1), 18 + w + 6, y, { font: font.num(18), level: 15 })
+    y += 32
+  }
+
+  // 信息块：人均 / 楼层 / 营业
+  const chips: [string, string][] = []
+  if (p.cost) chips.push(['人均', `¥${Math.round(p.cost)}`])
+  if (p.floor) chips.push(['楼层', p.floor])
+  if (p.openToday) chips.push(['营业', p.openToday])
+  let cx = 18
+  for (const [k, v] of chips) {
+    const vf = k === '营业' ? font.num(13) : font.num(17)
+    const w = Math.max(measure(ctx, v, vf), measure(ctx, k, font.cjk(11))) + 22
+    if (cx + w > 392) break
+    chamferRect(ctx, cx, y - 2, w, 46, 6, 6, 1)
+    text(ctx, k, cx + 11, y + 14, { font: font.cjk(11), level: 8 })
+    text(ctx, v, cx + 11, y + 36, { font: vf, level: 15 })
+    cx += w + 8
+  }
+  if (chips.length) y += 56
+
+  const addr = [p.area, p.address].filter(Boolean).join(' · ')
+  if (addr && y < 262) text(ctx, addr, 18, Math.min(y + 4, 262), { font: font.cjk(13), level: 8, maxWidth: 380 })
+
+  // 右侧：距离与方向
+  line(ctx, 404, 44, 404, 244, 4)
+  if (me) {
+    const d = haversine(me, p.entrance ?? p.location)
+    const b = angleDiff(heading, bearing(me, p.entrance ?? p.location))
+    const cxr = 488
+    const cyr = 124
+    ctx.strokeStyle = L(5)
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    ctx.arc(cxr, cyr, 54, 0, Math.PI * 2)
+    ctx.stroke()
+    for (let a = 0; a < 360; a += 30) {
+      const r = ((a - heading) * Math.PI) / 180
+      line(ctx, cxr + Math.sin(r) * 48, cyr - Math.cos(r) * 48, cxr + Math.sin(r) * 54, cyr - Math.cos(r) * 54, a === 0 ? 15 : 7, a === 0 ? 2.5 : 1.5)
+    }
+    chevron(ctx, cxr, cyr, 26, b)
+    const dd = fmtDist(d)
+    const dir = `${compass8(bearing(me, p.entrance ?? p.location), true)}方`
+    const w = measure(ctx, dd.v, font.num(26)) + measure(ctx, dd.u, font.label(11, 700)) + 4
+    numUnit(ctx, dd.v, dd.u, cxr - w / 2, 214, 26)
+    text(ctx, dir, cxr, 238, { font: font.cjk(14), level: 9, align: 'center' })
+  }
+  text(ctx, '单击 导航前往 · 双击 返回', 562, 274, { font: font.cjk(12), level: 8, align: 'right' })
 }

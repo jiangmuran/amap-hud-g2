@@ -4,7 +4,7 @@ import type { TextFrame } from '../glasses/display'
 import { compass8, normDeg } from '../geo'
 import { MANEUVER_LABEL, type Maneuver } from '../nav/route'
 import { fmtClock, fmtDistStr, fmtDurationZh, fmtSpeed } from './format'
-import { displayHeading, RADAR_CATEGORIES, type HudModel } from './model'
+import { displayHeading, QUICK_TAG_LABEL, RADAR_CATEGORIES, type HudModel } from './model'
 
 const ARROW: Record<Maneuver, string> = {
   depart: '↑',
@@ -55,9 +55,20 @@ export function buildTextFrame(m: HudModel): TextFrame {
     }
   }
 
+  if (m.view === 'poi' && m.poi) {
+    const p = m.poi
+    const meta = [p.rating ? `★${p.rating.toFixed(1)}` : '', p.cost ? `人均¥${Math.round(p.cost)}` : '', p.floor ?? '', p.openToday ?? ''].filter(Boolean).join('  ')
+    return { head, main: `${p.name}\n${meta}\n${p.address ?? ''}`, foot: '单击导航前往 · 双击返回' }
+  }
+
+  if (m.view === 'go') {
+    const rows = m.quick.slice(0, 6).map((q) => `${QUICK_TAG_LABEL[q.tag]}  ${q.place.name}`)
+    return { head, main: `前往\n${rows.join('\n') || '在手机端添加快捷点'}`, foot: '单击选择目的地' }
+  }
+
   if (m.view === 'radar') {
     const cat = RADAR_CATEGORIES[m.radar.category]
-    const rows = m.radar.pois.slice(0, 5).map((p, i) => `${i + 1}. ${p.name}  ${p.distance !== undefined ? fmtDistStr(p.distance) : ''}`)
+    const rows = m.radar.pois.slice(0, 5).map((p, i) => `${i + 1}. ${p.name}  ${p.distance !== undefined ? fmtDistStr(p.distance) : ''}${p.rating ? `  ★${p.rating.toFixed(1)}` : ''}${p.floor ? `  ${p.floor}` : ''}`)
     return { head, main: `周边 · ${cat.name}\n${rows.join('\n') || (m.radar.loading ? '扫描中…' : '单击扫描')}`, foot: '单击换类别 · 滑动切换页面' }
   }
 

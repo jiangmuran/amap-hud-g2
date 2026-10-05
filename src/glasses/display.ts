@@ -12,6 +12,8 @@
 import {
   CreateStartUpPageContainer,
   ImageContainerProperty,
+  ListContainerProperty,
+  ListItemContainerProperty,
   ImageRawDataUpdate,
   ImageRawDataUpdateResult,
   MenuContainerProperty,
@@ -53,6 +55,15 @@ export interface TextFrame {
 }
 
 export type DisplayMode = 'image' | 'text'
+
+/** 原生列表选择页（固件渲染，滑动移动高亮，单击选中） */
+export interface ListPage {
+  title: string
+  items: string[]
+}
+
+const LIST_TITLE = { id: 21, name: 'list-title' }
+const LIST_BODY = { id: 22, name: 'list-body' }
 
 export interface DisplayStats {
   sends: number
@@ -96,6 +107,12 @@ export class GlassesDisplay {
   private lastRebuildAt = 0
   private textSent: TextFrame = { head: '', main: '', foot: '' }
   private textPending: TextFrame | null = null
+  /** 非空时显示原生列表页，HUD 帧暂存不发送 */
+  private list: ListPage | null = null
+
+  get listOpen(): boolean {
+    return this.list !== null
+  }
 
   constructor(private bridge: HubBridge, private menu: MenuItem[]) {
     const s = ctx2d(this.shadow)
@@ -163,6 +180,63 @@ export class GlassesDisplay {
     return { containerTotalNum: texts.length, textObject: texts, menuObject: this.menuObject() }
   }
 
+  private listPage(l: ListPage) {
+    const items = l.items.slice(0, 20).map((s) => (utf8Len(s) > 60 ? truncUtf8(s, 60) : s) || ' ')
+    const title = new TextContainerProperty({
+      xPosition: 0, yPosition: 0, width: SCREEN_W, height: 40,
+      borderWidth: 0, borderColor: 0, paddingLength: 6,
+      containerID: LIST_TITLE.id, containerName: LIST_TITLE.name,
+      content: l.title, isEventCapture: 0, textColor: 3, zOrderIndex: 0,
+    })
+    const body = new ListContainerProperty({
+      xPosition: 0, yPosition: 42, width: SCREEN_W, height: SCREEN_H - 42,
+      borderWidth: 1, borderColor: 13, borderRadius: 6, paddingLength: 4,
+      containerID: LIST_BODY.id, containerName: LIST_BODY.name,
+      isEventCapture: 1, zOrderIndex: 1,
+      itemContainer: new ListItemContainerProperty({
+        itemCount: items.length, itemWidth: 0, isItemSelectBorderEn: 1, itemName: items,
+      }),
+    })
+    return { containerTotalNum: 2, textObject: [title], listObject: [body], menuObject: this.menuObject() }
+  }
+
+  /** 打开原生列表选择页 */
+  async showList(l: ListPage): Promise<boolean> {
+    if (!l.items.length) return false
+    this.list = l
+    const ok = await this.rebuild()
+    this.drawListShadow()
+    return ok
+  }
+
+  /** 关闭列表页，回到 HUD */
+  async hideList(): Promise<void> {
+    if (!this.list) return
+    this.list = null
+    await this.rebuild()
+  }
+
+  private drawListShadow(): void {
+    const l = this.list
+    if (!l) return
+    const ctx = ctx2d(this.shadow)
+    ctx.fillStyle = '#000'
+    ctx.fillRect(0, 0, SCREEN_W, SCREEN_H)
+    ctx.textBaseline = 'middle'
+    ctx.font = '18px -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif'
+    ctx.fillStyle = '#aaa'
+    ctx.fillText(l.title, 8, 20)
+    ctx.strokeStyle = '#ddd'
+    ctx.strokeRect(0.5, 42.5, SCREEN_W - 1, SCREEN_H - 43)
+    const n = Math.min(20, l.items.length)
+    const h = Math.min(40, (SCREEN_H - 50) / n)
+    l.items.slice(0, n).forEach((it, i) => {
+      ctx.fillStyle = '#fff'
+      ctx.fillText(it, 12, 46 + h * i + h / 2, SCREEN_W - 24)
+    })
+    this.onShadowChange?.()
+  }
+
   /** 创建启动页。createStartUpPageContainer 每个会话只能调用一次：无论成败都要打上已调用标记 */
   async start(): Promise<boolean> {
     let ok = false
@@ -187,7 +261,7 @@ export class GlassesDisplay {
   async rebuild(): Promise<boolean> {
     this.lastRebuildAt = Date.now()
     try {
-      const page = this.mode === 'image' ? this.imagePage() : this.textPage()
+      const page = this.list ? this.listPage(this.list) : this.mode === 'image' ? this.imagePage() : this.textPage()
       const ok = await this.bridge.rebuildPageContainer(new RebuildPageContainer(page))
       this.invalidate()
       return !!ok
@@ -277,15 +351,15 @@ export class GlassesDisplay {
   }
 
   private async pump(): Promise<void> {
-    if (this.pumping || this.paused || !this.ready || this.mode !== 'image') return
+    if (this.pumping || this.paused || this.list || !this.ready || this.mode !== 'image') return
     this.pumping = true
     try {
-      while (this.dirty && this.mode === 'image' && !this.paused) {
+      while (this.dirty && this.mode === 'image' && !this.paused && !this.list) {
         this.dirty = false
         const t0 = performance.now()
         let count = 0
         for (let i = 0; i < TILES.length; i++) {
-          if (this.mode !== 'image' || this.paused) break
+          if (this.mode !== 'image' || this.paused || this.list) break
           const q = this.quantizeTile(i)
           if (q.hash === this.sent[i]) continue
           const ok = await this.sendTile(i, q)
@@ -362,7 +436,7 @@ export class GlassesDisplay {
   }
 
   private async pumpText(): Promise<void> {
-    if (this.pumping || this.paused || !this.ready || this.mode !== 'text' || !this.textPending) return
+    if (this.pumping || this.paused || this.list || !this.ready || this.mode !== 'text' || !this.textPending) return
     this.pumping = true
     try {
       while (this.textPending) {
@@ -403,4 +477,18 @@ export class GlassesDisplay {
     ctx.strokeRect(TEXT_SLOTS[1].x + 0.5, TEXT_SLOTS[1].y + 0.5, TEXT_SLOTS[1].w - 1, TEXT_SLOTS[1].h - 1)
     this.onShadowChange?.()
   }
+}
+
+function utf8Len(s: string): number {
+  return new TextEncoder().encode(s).length
+}
+
+/** 按 UTF-8 字节截断（列表项上限 64 字节，留余量） */
+function truncUtf8(s: string, max: number): string {
+  let out = ''
+  for (const ch of s) {
+    if (utf8Len(out + ch + '…') > max) break
+    out += ch
+  }
+  return out + '…'
 }
