@@ -46,6 +46,8 @@ export interface Settings {
   basemap: boolean
   focusMode: boolean
   refresh: RefreshProfile
+  /** 手机屏幕常亮：关闭 / 导航时 / 始终 */
+  keepAwake: 'off' | 'nav' | 'always'
   /** 首次打开时选择的手机系统 */
   platform: '' | 'ios' | 'android'
   /** 宿主定位是否为 WGS-84（iOS / 安卓系统定位都是），是则本地转换为 GCJ-02 */
@@ -65,6 +67,7 @@ export const DEFAULT_SETTINGS: Settings = {
   basemap: true,
   focusMode: false,
   refresh: 'standard',
+  keepAwake: 'nav',
   platform: '',
   locationIsWgs: true,
   pins: [],

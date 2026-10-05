@@ -5,10 +5,10 @@ import { DeviceConnectType } from '@evenrealities/even_hub_sdk'
 import { AmapClient, QuotaTracker, type Poi, type ReGeo, type Weather } from './amap/api'
 import { angleDiff, bearing, haversine, type LngLat } from './geo'
 import type { GlassesStatus, HubBridge } from './glasses/bridge'
-import { createCanvas, GlassesDisplay, SCREEN_H, SCREEN_W, type MenuItem, type TemplateSpec } from './glasses/display'
-import { brackets, maneuverIcon } from './hud/gfx'
-import { fmtClock, fmtDistStr, fmtDurationZh, fmtSpeed } from './hud/format'
-import { MANEUVER_LABEL, MODE_LABEL } from './nav/route'
+import { createCanvas, GlassesDisplay, SCREEN_H, SCREEN_W, type MenuItem } from './glasses/display'
+import { fmtDistStr } from './hud/format'
+import { templateFor } from './hud/templates'
+import { ScreenWake } from './phone/wakelock'
 import { InputNormalizer, type InputAction } from './glasses/input'
 import { BasemapManager } from './hud/basemap'
 import { QUICK_TAG_LABEL, RADAR_CATEGORIES, type HudModel, type QuickItem, type RadarState, type ViewId } from './hud/model'
@@ -56,18 +56,6 @@ type Picker =
 
 const REFRESH_MS = { eco: 2000, standard: 1000, fast: 450 }
 
-/** 导航页模板：x/y/w/h 为眼镜像素坐标（576×288） */
-const NAV_TEMPLATE: TemplateSpec = {
-  key: 'nav',
-  images: [{ name: 'arrow', x: 4, y: 4, w: 136, h: 136 }],
-  texts: [
-    { name: 'main', x: 150, y: 6, w: 422, h: 76, color: 4 },
-    { name: 'then', x: 150, y: 88, w: 422, h: 40, color: 3 },
-    { name: 'prog', x: 6, y: 146, w: 564, h: 38, color: 3 },
-    { name: 'stats', x: 6, y: 186, w: 564, h: 68, color: 4 },
-    { name: 'status', x: 6, y: 254, w: 564, h: 34, color: 2 },
-  ],
-}
 
 /** 专注模式下距离转向多近时自动唤醒完整 HUD */
 const FOCUS_WAKE: Record<TravelMode, number> = { walking: 80, bicycling: 160, electrobike: 160, driving: 500 }
@@ -104,6 +92,7 @@ export class HudApp {
   /** POI 详情卡（模态） */
   poiDetail?: Poi
   private planningName?: string
+  readonly wake = new ScreenWake()
 
   viewIndex = 0
   overviewZoom: 'fit' | 'near' = 'fit'
@@ -159,9 +148,41 @@ export class HudApp {
     }
 
     // 先出首屏再等定位，避免黑屏
+    // 页面重新可见（安卓从后台恢复）时检查定位是否已断
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && !this.loc.simulating && (!this.loc.last || Date.now() - this.loc.last.t > 10_000)) void this.loc.start()
+    })
     await this.display.start()
     this.scheduleRender(0)
     void this.loc.start().then(() => this.changed())
+    await this.restoreSession()
+  }
+
+  // ── 导航状态持久化：被系统杀掉后重新打开能接着导航 ─────────────────
+  private static SESSION_KEY = 'session.v1'
+
+  private saveSession(): void {
+    if (!this.route || !this.session || this.session.simulate) {
+      void this.kv.set(HudApp.SESSION_KEY, '')
+      return
+    }
+    void this.kv.set(HudApp.SESSION_KEY, JSON.stringify({ route: this.route, session: this.session, savedAt: Date.now() }))
+  }
+
+  private async restoreSession(): Promise<void> {
+    try {
+      const raw = await this.kv.get(HudApp.SESSION_KEY)
+      if (!raw || this.route) return
+      const { route, session, savedAt } = JSON.parse(raw)
+      if (!route?.points?.length || Date.now() - savedAt > 3 * 3600_000) return void this.kv.set(HudApp.SESSION_KEY, '')
+      this.applyRoute(route)
+      this.session = session
+      this.viewIndex = 0
+      this.toast(`已恢复导航 · ${session.dest?.name ?? route.destName}`, 3000)
+      this.changed()
+    } catch (e) {
+      console.warn('restoreSession', e)
+    }
   }
 
   on(cb: () => void): () => void {
@@ -171,6 +192,8 @@ export class HudApp {
 
   /** 通知手机端；render=false 时不立即重绘眼镜（交给刷新节拍），避免后台流量挤占操作响应 */
   private changed(render = true): void {
+    const k = this.settings?.keepAwake ?? 'nav'
+    void this.wake.set(k === 'always' || (k === 'nav' && !!this.route))
     for (const cb of this.listeners) cb()
     if (render) this.requestRender()
   }
@@ -270,6 +293,8 @@ export class HudApp {
         setTimeout(() => void this.display.resume({ probe: true }), 400)
         break
       case 'foreground':
+        // 安卓可能在后台挂起 WebView，定位流会断：回到前台时若定位已过期就重新开启
+        if (!this.loc.simulating && (!this.loc.last || Date.now() - this.loc.last.t > 10_000)) void this.loc.start()
         // 退出确认/系统菜单弹出时也会收到 FOREGROUND_ENTER（极性反转），
         // 也可能是真的回到前台。先暂停，再探测式恢复整屏重发。
         if (!this.exitDialogPending) {
@@ -598,6 +623,7 @@ export class HudApp {
     this.tracker = new RouteTracker(route)
     this.nav = this.loc.last ? this.tracker.update(this.loc.last) : undefined
     this.roadbookOffset = 0
+    queueMicrotask(() => this.saveSession())
   }
 
   stopNavigation(): void {
@@ -609,6 +635,7 @@ export class HudApp {
     this.session = undefined
     this.arrival = undefined
     this.viewIndex = 0
+    this.saveSession()
     this.changed()
   }
 
@@ -823,60 +850,14 @@ export class HudApp {
     }
   }
 
-  // ── 导航模板页 ─────────────────────────────────────────────────────
-  // 左上角转向箭头（图片，只在转向类型变化时重发）+ 5 行原生文本（只传变化的行）。
-
-  private arrowCanvas = createCanvas(136, 136)
-  private lastArrowKey = ''
-
-  private navTexts(m: HudModel): Record<string, string> {
-    const nav = m.nav!
-    const route = m.route!
-    const focus = m.view === 'focus'
-    const dist = fmtDistStr(nav.distToManeuver)
-    const act = nav.maneuver === 'arrive' ? '到达目的地' : MANEUVER_LABEL[nav.maneuver]
-    const road = nav.maneuver === 'arrive'
-      ? route.destName
-      : nav.nextStep?.road || (nav.nextStep?.instruction ?? '').replace(/^.*?(进入|沿)/, '$1').slice(0, 18)
-    const then = nav.thenManeuver && nav.thenManeuver !== 'straight' && nav.nextStep
-      ? `然后 ${MANEUVER_LABEL[nav.thenManeuver]} · ${fmtDistStr(nav.thenDistance ?? 0)}`
-      : ' '
-    const segs = 20
-    const k = Math.round(nav.progress * segs)
-    const eta = fmtClock(new Date(m.now.getTime() + nav.etaSec * 1000))
-    const bat = m.glasses.battery !== undefined ? `  眼镜 ${m.glasses.battery}%` : ''
-    return {
-      main: `${dist}  ${act}\n${road ? '进入 ' + road : ' '}`,
-      then: focus ? ' ' : then,
-      prog: focus ? ' ' : `${'━'.repeat(k)}${'─'.repeat(segs - k)}  ${Math.round(nav.progress * 100)}%`,
-      stats: focus ? ' ' : `剩余 ${fmtDistStr(nav.remaining)}   ${fmtDurationZh(nav.etaSec)}   到达 ${eta}\n${MODE_LABEL[route.mode]}   ${fmtSpeed(m.fix?.speed ?? NaN)} km/h`,
-      status: m.toast ? `※ ${m.toast}` : `${fmtClock(m.now)}${bat}${m.simulated ? '  模拟' : ''}`,
-    }
-  }
-
-  private drawArrow(m: HudModel): HTMLCanvasElement {
-    const key = `${m.nav!.maneuver}|${m.view}`
-    if (key !== this.lastArrowKey) {
-      this.lastArrowKey = key
-      const ctx = this.arrowCanvas.getContext('2d', { willReadFrequently: true })!
-      ctx.fillStyle = '#000'
-      ctx.fillRect(0, 0, 136, 136)
-      brackets(ctx, 2, 2, 132, 132, 16, 9)
-      maneuverIcon(ctx, m.nav!.maneuver, 68, 70, m.view === 'focus' ? 70 : 104)
-    }
-    return this.arrowCanvas
-  }
-
-  private renderNavTemplate(m: HudModel): void {
-    void this.display.showTemplate(NAV_TEMPLATE).then(() => {
-      this.display.setTemplate(this.navTexts(m), { arrow: this.drawArrow(m) })
-    })
-  }
-
   render(): void {
     const m = this.model()
-    const useTemplate = (m.view === 'nav' || m.view === 'focus') && !!this.nav && !!this.route && this.display.mode === 'image' && !this.display.listOpen
-    if (useTemplate) return this.renderNavTemplate(m)
+    // 有模板的页面走模板（只发送变化的文本/小图）；全局地图等走四图块
+    const tpl = this.display.mode === 'image' && !this.display.listOpen ? templateFor(m) : null
+    if (tpl) {
+      void this.display.showTemplate(tpl.spec).then(() => this.display.setTemplate(tpl.frame.texts, tpl.frame.images))
+      return
+    }
     if (this.display.templateKey) void this.display.showTiles()
     this.display.setTileIntervals(this.tileIntervals(m.view))
     const ctx = this.frame.getContext('2d')!

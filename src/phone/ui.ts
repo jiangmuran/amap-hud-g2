@@ -267,6 +267,10 @@ export class PhoneUI {
         void this.app.updateSettings({ [key]: !s[key] })
         return
       }
+      case 'awake':
+        this.commitSettingsInputs()
+        void this.app.updateSettings({ keepAwake: el.dataset.v as 'off' | 'nav' | 'always' })
+        return this.renderSheet()
       case 'refresh':
         this.commitSettingsInputs()
         void this.app.updateSettings({ refresh: el.dataset.v as RefreshProfile })
@@ -766,6 +770,16 @@ export class PhoneUI {
         </div>
 
         <div class="section">
+          <div class="section-header">后台运行</div>
+          <div class="group">
+            <div class="cell"><div class="grow">保持手机亮屏</div>
+              <div class="segmented" style="width:200px">${([['off', '关闭'], ['nav', '导航时'], ['always', '始终']] as const).map(([v, l]) => `<button class="${s.keepAwake === v ? 'on' : ''}" data-act="awake" data-v="${v}">${l}</button>`).join('')}</div>
+            </div>
+          </div>
+          <p class="section-footer">Even 平台没有「后台运行」权限可申请：iPhone 锁屏后仍会继续导航；安卓在内存紧张时可能挂起后台应用。导航时保持手机亮屏可避免中断${this.app.wake.supported ? '' : '（当前系统不支持此功能）'}。应用被系统关闭后重新打开会自动恢复导航。眼镜的显示开关由系统控制，应用无法接管。</p>
+        </div>
+
+        <div class="section">
           <div class="section-header">手机系统</div>
           <div class="group">
             <div class="cell"><div class="grow">系统</div>
@@ -812,6 +826,7 @@ export class PhoneUI {
         ['图块发送', `${st.sends} 次 · 失败 ${st.failures}`],
         ['平均耗时', `${Math.round(st.avgSendMs)} ms / 图块`],
         ['图块编码', `${st.encoding === 'gray4' ? '4位灰度 PNG' : 'RGBA PNG'} · ${(st.lastTileBytes / 1024).toFixed(1)}KB`],
+        ['屏幕常亮', this.app.wake.supported ? (this.app.wake.active ? '已开启' : '未开启') : '不支持'],
         ['操作响应', st.inputLatencyMs ? `${Math.round(st.inputLatencyMs)} ms（最近一次）` : '—'],
         ['街道底图', this.app.basemap.lastError ?? (this.app.basemap.current ? `z${this.app.basemap.current.zoom} 已加载` : '未加载')],
       ]
