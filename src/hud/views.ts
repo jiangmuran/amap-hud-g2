@@ -163,16 +163,6 @@ function drawLocalMap(ctx: Ctx, m: HudModel, o: MapOpts): void {
     text(ctx, 'N', nx, ny, { font: font.num(14, 900), level: 15, align: 'center', baseline: 'middle' })
   }
 
-  // 面包屑轨迹
-  const trail = m.trip.trail
-  if (trail.length > 1) {
-    ctx.fillStyle = L(6)
-    for (const p of trail) {
-      if (haversine(p, me) > rangeM) continue
-      const [x, y] = toScreen(p)
-      ctx.fillRect(x - 1, y - 1, 2, 2)
-    }
-  }
 
   // 路线
   const route = m.route

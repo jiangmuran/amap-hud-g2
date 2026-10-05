@@ -1,7 +1,7 @@
 {
   "name": "RealMapCN",
   "tagline": "适用于中国大陆的开源全功能地图",
-  "description": "把导航搬进 G2 的视野：一套为单色微型显示屏设计的科幻风 HUD。\n\n【导航】\n· 转向指引：大号转向箭头与距离、即将进入的道路、\"然后…\"预告\n· 局部雷达地图：距离环与罗盘刻度，车头朝上 / 正北朝上，随车速自动缩放，可叠加街道线框\n· 全局路线总览、路书、偏航自动重算、到达总结\n· 步行、骑行、电动车、驾车，驾车显示红绿灯、过路费与拥堵路段\n\n【眼镜上直接选目的地】\n「前往」页列出家、公司、收藏地点和最近目的地，用戒指或镜腿选择即可出发，无需掏手机。\n\n【周边筛选】\n地铁站、超市、美食等 10 类，显示评分、人均和楼层；详情卡含营业时间、方向与距离，单击直接导航到入口。\n\n【更多】\n· 仪表盘：速度表、行程、用时、均速、海拔、航向、爬升\n· 专注模式：远离路口时几乎熄屏，接近转向自动亮起\n· 只刷新画面中变化的区域，刷新频率随速度自适应，操作跟手\n\n完全开源，欢迎在 GitHub 提交问题与建议。\n开源地址：https://github.com/jiangmuran/amap-hud-g2\n\n使用前需在手机端设置中填写高德开放平台「Web服务」Key（可免费申请）。地图与地点数据来自高德地图。\n\nSci-fi navigation HUD for G2: turn-by-turn, radar mini-map, route overview, nearby places with ratings and floors, and destinations you can pick right on the glasses. Requires your own free AMap Web Service key. Map data: AMap. Open source: https://github.com/jiangmuran/amap-hud-g2",
+  "description": "把导航搬进 G2 的视野：一套为单色微型显示屏设计的科幻风 HUD。\n\n【导航】\n· 简洁的导航主页：转向箭头、距离与即将进入的道路、\"然后…\"预告、进度、剩余距离与到达时间，只更新变化的文字，响应迅速\n· 全局路线总览、路书、偏航自动重算、到达总结\n· 步行、骑行、电动车、驾车，驾车显示红绿灯、过路费与拥堵路段\n\n【眼镜上直接选目的地】\n「前往」页列出家、公司、收藏地点和最近目的地，用戒指或镜腿选择即可出发，无需掏手机。\n\n【周边筛选】\n地铁站、超市、美食等 10 类，显示评分、人均和楼层；详情卡含营业时间、方向与距离，单击直接导航到入口。\n\n【更多】\n· 仪表盘：速度表、行程、用时、均速、海拔、航向、爬升\n· 专注模式：远离路口时几乎熄屏，接近转向自动亮起\n· 只刷新画面中变化的区域，刷新频率随速度自适应，操作跟手\n\n完全开源，欢迎在 GitHub 提交问题与建议。\n开源地址：https://github.com/jiangmuran/amap-hud-g2\n\n使用前需在手机端设置中填写高德开放平台「Web服务」Key（可免费申请）。地图与地点数据来自高德地图。\n\nSci-fi navigation HUD for G2: turn-by-turn, radar mini-map, route overview, nearby places with ratings and floors, and destinations you can pick right on the glasses. Requires your own free AMap Web Service key. Map data: AMap. Open source: https://github.com/jiangmuran/amap-hud-g2",
   "category": [
     "Travel"
   ],
@@ -51,5 +51,5 @@
     15728655,
     0
   ],
-  "changelog": "大幅降低眼镜画面传输量：改用眼镜原生的 4 位灰度图像（数据量约为原来的 1/3），操作期间优先刷新，慢速连接时自动降低后台刷新频率；新增「眼镜传输测试」诊断。"
+  "changelog": "导航主页改为简洁的模板页：转向箭头 + 原生文字，只更新变化的那一行文字，导航时几乎不再传输图片，响应大幅加快；移除轨迹页。"
 }

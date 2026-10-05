@@ -68,7 +68,20 @@ const LIST_BODY = { id: 22, name: 'list-body' }
 
 export type TileEncoding = 'gray4' | 'rgba'
 
+/**
+ * 模板页：页面结构（若干原生文本控件 + 少量小图片）只在进入时创建一次，
+ * 之后只更新内容有变化的文本控件 / 图片。文本更新只传几十字节，比整屏图块快得多。
+ */
+export interface TemplateSpec {
+  key: string
+  images: { name: string; x: number; y: number; w: number; h: number }[]
+  texts: { name: string; x: number; y: number; w: number; h: number; color?: number; border?: number; padding?: number }[]
+}
+
 export interface DisplayStats {
+  /** 文本控件平均更新耗时与次数 */
+  textAvgMs: number
+  textSends: number
   /** 当前图块编码方式与最近一块的字节数 */
   encoding: TileEncoding
   lastTileBytes: number
@@ -101,7 +114,7 @@ export class GlassesDisplay {
   ready = false
   /** 宿主模态层（退出确认）显示期间暂停发送：此时发送必然失败，不能算作通道损坏 */
   private paused = false
-  readonly stats: DisplayStats = { encoding: 'gray4', lastTileBytes: 0, perTile: [0, 0, 0, 0], inputLatencyMs: 0, sends: 0, failures: 0, lastFrameMs: 0, avgSendMs: 0, tilesLastFrame: 0 }
+  readonly stats: DisplayStats = { textAvgMs: 0, textSends: 0, encoding: 'gray4', lastTileBytes: 0, perTile: [0, 0, 0, 0], inputLatencyMs: 0, sends: 0, failures: 0, lastFrameMs: 0, avgSendMs: 0, tilesLastFrame: 0 }
   /** 已成功发送到眼镜的画面（手机端镜像预览用） */
   readonly shadow = createCanvas(SCREEN_W, SCREEN_H)
   onShadowChange?: () => void
@@ -121,6 +134,19 @@ export class GlassesDisplay {
   private list: ListPage | null = null
   /** 用户操作发生的时间，帧发完时用来计算响应耗时 */
   private inputAt = 0
+
+  // ── 模板页状态 ──
+  private tpl: TemplateSpec | null = null
+  private tplIds = new Map<string, number>()
+  private tplTextSent = new Map<string, string>()
+  private tplTextPending = new Map<string, string>()
+  private tplImgSent = new Map<string, number>()
+  private tplImgPending = new Map<string, { hash: number; q: Uint8Array; w: number; h: number }>()
+  private tplImgLevels = new Map<string, { q: Uint8Array; w: number; h: number }>()
+
+  get templateKey(): string | null {
+    return this.tpl?.key ?? null
+  }
 
   markInput(): void {
     this.inputAt = performance.now()
@@ -196,6 +222,186 @@ export class GlassesDisplay {
         }),
     )
     return { containerTotalNum: texts.length, textObject: texts, menuObject: this.menuObject() }
+  }
+
+  private templatePage(t: TemplateSpec) {
+    this.tplIds.clear()
+    const capture = new TextContainerProperty({
+      xPosition: 0, yPosition: 0, width: SCREEN_W, height: SCREEN_H,
+      borderWidth: 0, borderColor: 0, paddingLength: 0,
+      containerID: 1, containerName: 'input', content: ' ', isEventCapture: 1, zOrderIndex: 0,
+    })
+    let z = 1
+    const texts = [capture, ...t.texts.map((x, i) => {
+      const id = 41 + i
+      this.tplIds.set(x.name, id)
+      return new TextContainerProperty({
+        xPosition: x.x, yPosition: x.y, width: x.w, height: x.h,
+        borderWidth: x.border ?? 0, borderColor: 6, borderRadius: 4, paddingLength: x.padding ?? 2,
+        containerID: id, containerName: x.name, content: this.tplTextPending.get(x.name) ?? this.tplTextSent.get(x.name) ?? ' ',
+        isEventCapture: 0, textColor: x.color ?? 4, zOrderIndex: z++,
+      })
+    })]
+    const images = t.images.map((x, i) => {
+      const id = 31 + i
+      this.tplIds.set(x.name, id)
+      return new ImageContainerProperty({ xPosition: x.x, yPosition: x.y, width: x.w, height: x.h, containerID: id, containerName: x.name, zOrderIndex: z++ })
+    })
+    return { containerTotalNum: texts.length + images.length, textObject: texts, imageObject: images, menuObject: this.menuObject() }
+  }
+
+  /** 切换到模板页（同一个模板已在显示时不重建） */
+  async showTemplate(t: TemplateSpec): Promise<void> {
+    if (this.tpl?.key === t.key) return
+    this.tpl = t
+    // 新建页面时文本已随创建写入，图片需要重发
+    for (const x of t.texts) {
+      const v = this.tplTextPending.get(x.name)
+      if (v !== undefined) { this.tplTextSent.set(x.name, v); this.tplTextPending.delete(x.name) }
+    }
+    this.tplImgSent.clear()
+    for (const [name, lv] of this.tplImgLevels) this.tplImgPending.set(name, { hash: -1, ...lv })
+    await this.rebuild()
+    this.drawTemplateShadow()
+  }
+
+  /** 回到四图块页 */
+  async showTiles(): Promise<void> {
+    if (!this.tpl) return
+    this.tpl = null
+    this.tplTextSent.clear()
+    this.tplImgSent.clear()
+    await this.rebuild()
+  }
+
+  /** 提交模板内容：只有与已发送内容不同的部分才会发送 */
+  setTemplate(texts: Record<string, string>, images: Record<string, HTMLCanvasElement> = {}): void {
+    if (!this.tpl) return
+    let changed = false
+    for (const [name, raw] of Object.entries(texts)) {
+      const v = (raw || ' ').slice(0, 900)
+      if (this.tplTextSent.get(name) === v) { this.tplTextPending.delete(name); continue }
+      if (this.tplTextPending.get(name) !== v) { this.tplTextPending.set(name, v); changed = true }
+    }
+    for (const [name, canvas] of Object.entries(images)) {
+      const c = ctx2d(canvas)
+      const data = c.getImageData(0, 0, canvas.width, canvas.height).data
+      const q = new Uint8Array(canvas.width * canvas.height)
+      let hash = 0x811c9dc5
+      for (let k = 0, j = 0; k < data.length; k += 4, j++) {
+        const lv = ((data[k] * 299 + data[k + 1] * 587 + data[k + 2] * 114) / 1000 * 15 + 127.5) / 255 | 0
+        q[j] = lv
+        hash = Math.imul(hash ^ lv, 0x01000193)
+      }
+      hash >>>= 0
+      this.tplImgLevels.set(name, { q, w: canvas.width, h: canvas.height })
+      if (this.tplImgSent.get(name) === hash) { this.tplImgPending.delete(name); continue }
+      if (this.tplImgPending.get(name)?.hash !== hash) { this.tplImgPending.set(name, { hash, q, w: canvas.width, h: canvas.height }); changed = true }
+    }
+    if (changed) {
+      this.dirty = true
+      void this.pump()
+    }
+  }
+
+  private async pumpTemplate(): Promise<void> {
+    // 文本优先（便宜、信息量大），然后才是图片
+    while (this.tpl && !this.paused && !this.list && this.mode === 'image') {
+      const [tname, tval] = this.tplTextPending.entries().next().value ?? []
+      if (tname !== undefined) {
+        this.tplTextPending.delete(tname)
+        const id = this.tplIds.get(tname)
+        if (id === undefined) continue
+        const t0 = performance.now()
+        const ok = await this.bridge.textContainerUpgrade(new TextContainerUpgrade({ containerID: id, containerName: tname, content: tval }))
+        this.stats.textAvgMs = this.stats.textAvgMs ? this.stats.textAvgMs * 0.8 + (performance.now() - t0) * 0.2 : performance.now() - t0
+        this.stats.textSends++
+        if (ok) this.tplTextSent.set(tname, tval!)
+        else if (!this.tplTextPending.has(tname)) this.tplTextPending.set(tname, tval!)
+        this.drawTemplateShadow()
+        if (!ok) break
+        continue
+      }
+      const [iname, img] = this.tplImgPending.entries().next().value ?? []
+      if (iname === undefined) break
+      this.tplImgPending.delete(iname)
+      const id = this.tplIds.get(iname)
+      if (id === undefined) continue
+      const bytes = this.stats.encoding === 'gray4' ? await encodeGray4Png(img!.q, img!.w, img!.h) : await this.encodeLevelsRgba(img!.q, img!.w, img!.h)
+      const t0 = performance.now()
+      let res: ImageRawDataUpdateResult
+      try {
+        res = ImageRawDataUpdateResult.normalize(await this.bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: id, containerName: iname, imageData: bytes })))
+      } catch {
+        res = ImageRawDataUpdateResult.sendFailed
+      }
+      const dt = performance.now() - t0
+      this.stats.sends++
+      this.stats.avgSendMs = this.stats.avgSendMs ? this.stats.avgSendMs * 0.9 + dt * 0.1 : dt
+      if (res === ImageRawDataUpdateResult.success) {
+        this.fastFails = 0
+        this.probing = false
+        this.probeTries = 0
+        this.tplImgSent.set(iname, img!.hash)
+        this.drawTemplateShadow()
+      } else {
+        console.warn(`template ${iname} → ${res} (${dt.toFixed(0)}ms, ${this.stats.encoding})`)
+        if (!this.tplImgPending.has(iname)) this.tplImgPending.set(iname, img!)
+        await this.handleImageFailure(res, dt)
+        break
+      }
+    }
+    if (this.inputAt && !this.tplTextPending.size) {
+      this.stats.inputLatencyMs = performance.now() - this.inputAt
+      this.inputAt = 0
+    }
+  }
+
+  private async encodeLevelsRgba(q: Uint8Array, w: number, h: number): Promise<Uint8Array> {
+    const c = createCanvas(w, h)
+    const ctx = ctx2d(c)
+    const data = ctx.createImageData(w, h)
+    for (let j = 0; j < q.length; j++) {
+      const v = q[j] * 17
+      data.data[j * 4] = data.data[j * 4 + 1] = data.data[j * 4 + 2] = v
+      data.data[j * 4 + 3] = 255
+    }
+    ctx.putImageData(data, 0, 0)
+    const blob: Blob = await new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error('toBlob failed'))), 'image/png'))
+    return new Uint8Array(await blob.arrayBuffer())
+  }
+
+  /** 手机端镜像：近似绘制模板页（原生文本用系统字体模拟） */
+  private drawTemplateShadow(): void {
+    const t = this.tpl
+    if (!t) return
+    const ctx = ctx2d(this.shadow)
+    ctx.fillStyle = '#000'
+    ctx.fillRect(0, 0, SCREEN_W, SCREEN_H)
+    for (const im of t.images) {
+      const lv = this.tplImgSent.has(im.name) ? this.tplImgLevels.get(im.name) : undefined
+      if (!lv) continue
+      const data = ctx.createImageData(lv.w, lv.h)
+      for (let j = 0; j < lv.q.length; j++) {
+        const v = lv.q[j] * 17
+        data.data[j * 4] = data.data[j * 4 + 1] = data.data[j * 4 + 2] = v
+        data.data[j * 4 + 3] = 255
+      }
+      ctx.putImageData(data, im.x, im.y)
+    }
+    ctx.textBaseline = 'top'
+    ctx.font = '21px -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif'
+    for (const x of t.texts) {
+      const v = this.tplTextSent.get(x.name) ?? ''
+      const lvl = x.color ?? 4
+      ctx.fillStyle = `rgb(${lvl * 60},${lvl * 60},${lvl * 60})`
+      if (x.border) {
+        ctx.strokeStyle = '#666'
+        ctx.strokeRect(x.x + 0.5, x.y + 0.5, x.w - 1, x.h - 1)
+      }
+      v.split('\n').forEach((line, i) => ctx.fillText(line, x.x + (x.padding ?? 2) + 2, x.y + (x.padding ?? 2) + 2 + i * 27, x.w - 8))
+    }
+    this.onShadowChange?.()
   }
 
   private listPage(l: ListPage) {
@@ -279,7 +485,13 @@ export class GlassesDisplay {
   async rebuild(): Promise<boolean> {
     this.lastRebuildAt = Date.now()
     try {
-      const page = this.list ? this.listPage(this.list) : this.mode === 'image' ? this.imagePage() : this.textPage()
+      const page = this.list
+        ? this.listPage(this.list)
+        : this.mode !== 'image'
+          ? this.textPage()
+          : this.tpl
+            ? this.templatePage(this.tpl)
+            : this.imagePage()
       const ok = await this.bridge.rebuildPageContainer(new RebuildPageContainer(page))
       this.invalidate()
       return !!ok
@@ -316,6 +528,11 @@ export class GlassesDisplay {
 
   /** 宿主可能清空了页面（前后台切换、菜单、对话框后），标记全部重发 */
   invalidate(): void {
+    // 模板页：页面可能被宿主清空，文本和图片全部重发
+    for (const [k, v] of this.tplTextSent) if (!this.tplTextPending.has(k)) this.tplTextPending.set(k, v)
+    this.tplTextSent.clear()
+    for (const [k, lv] of this.tplImgLevels) this.tplImgPending.set(k, { hash: -1, ...lv })
+    this.tplImgSent.clear()
     this.sent = TILES.map(() => null)
     this.textSent = { head: '', main: '', foot: '' }
     this.dirty = true
@@ -464,6 +681,16 @@ export class GlassesDisplay {
 
   private async pump(): Promise<void> {
     if (this.pumping || this.paused || this.list || !this.ready || this.mode !== 'image') return
+    if (this.tpl) {
+      this.pumping = true
+      try {
+        await this.pumpTemplate()
+      } finally {
+        this.pumping = false
+      }
+      if ((this.tplTextPending.size || this.tplImgPending.size) && !this.paused) setTimeout(() => void this.pump(), 300)
+      return
+    }
     this.pumping = true
     try {
       let frameStart = performance.now()
@@ -555,8 +782,16 @@ export class GlassesDisplay {
       return true
     }
 
-    this.stats.failures++
     console.warn(`tile ${t.name} → ${res} (${dt.toFixed(0)}ms, ${this.stats.encoding})`)
+    return this.handleImageFailure(res, dt)
+  }
+
+  /**
+   * 图片发送失败的统一处理（图块页和模板页共用）。返回 false 表示本次放弃、稍后重试。
+   * 顺序很重要：宿主覆盖层（菜单/对话框）期间的失败不能算作通道损坏。
+   */
+  private async handleImageFailure(res: ImageRawDataUpdateResult, dt: number): Promise<boolean> {
+    this.stats.failures++
     // 宿主不接受 4 位灰度 PNG：连续两次图片类错误就退回 RGBA PNG
     if (this.stats.encoding === 'gray4' && !this.paused &&
       (res === ImageRawDataUpdateResult.imageException || res === ImageRawDataUpdateResult.imageToGray4Failed || res === ImageRawDataUpdateResult.imageSizeInvalid)) {

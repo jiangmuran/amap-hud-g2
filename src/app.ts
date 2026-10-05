@@ -5,11 +5,13 @@ import { DeviceConnectType } from '@evenrealities/even_hub_sdk'
 import { AmapClient, QuotaTracker, type Poi, type ReGeo, type Weather } from './amap/api'
 import { angleDiff, bearing, haversine, type LngLat } from './geo'
 import type { GlassesStatus, HubBridge } from './glasses/bridge'
-import { createCanvas, GlassesDisplay, SCREEN_H, SCREEN_W, type MenuItem } from './glasses/display'
+import { createCanvas, GlassesDisplay, SCREEN_H, SCREEN_W, type MenuItem, type TemplateSpec } from './glasses/display'
+import { brackets, maneuverIcon } from './hud/gfx'
+import { fmtClock, fmtDistStr, fmtDurationZh, fmtSpeed } from './hud/format'
+import { MANEUVER_LABEL, MODE_LABEL } from './nav/route'
 import { InputNormalizer, type InputAction } from './glasses/input'
 import { BasemapManager } from './hud/basemap'
 import { QUICK_TAG_LABEL, RADAR_CATEGORIES, type HudModel, type QuickItem, type RadarState, type ViewId } from './hud/model'
-import { fmtDistStr } from './hud/format'
 import { buildTextFrame } from './hud/textHud'
 import { poiMeta, renderHud } from './hud/views'
 import { demoRouteJson, DEMO_ORIGIN } from './nav/demo'
@@ -53,6 +55,19 @@ type Picker =
   | { kind: 'category' }
 
 const REFRESH_MS = { eco: 2000, standard: 1000, fast: 450 }
+
+/** 导航页模板：x/y/w/h 为眼镜像素坐标（576×288） */
+const NAV_TEMPLATE: TemplateSpec = {
+  key: 'nav',
+  images: [{ name: 'arrow', x: 4, y: 4, w: 136, h: 136 }],
+  texts: [
+    { name: 'main', x: 150, y: 6, w: 422, h: 76, color: 4 },
+    { name: 'then', x: 150, y: 88, w: 422, h: 40, color: 3 },
+    { name: 'prog', x: 6, y: 146, w: 564, h: 38, color: 3 },
+    { name: 'stats', x: 6, y: 186, w: 564, h: 68, color: 4 },
+    { name: 'status', x: 6, y: 254, w: 564, h: 34, color: 2 },
+  ],
+}
 
 /** 专注模式下距离转向多近时自动唤醒完整 HUD */
 const FOCUS_WAKE: Record<TravelMode, number> = { walking: 80, bicycling: 160, electrobike: 160, driving: 500 }
@@ -176,7 +191,7 @@ export class HudApp {
   views(): ViewId[] {
     if (this.arrival) return ['arrival', 'go', 'radar', 'telemetry', 'overview']
     if (this.route) return ['nav', 'overview', 'roadbook', 'telemetry', 'radar', 'go']
-    return ['cruise', 'go', 'radar', 'overview', 'telemetry']
+    return ['cruise', 'go', 'radar', 'telemetry']
   }
 
   get view(): ViewId {
@@ -808,8 +823,61 @@ export class HudApp {
     }
   }
 
+  // ── 导航模板页 ─────────────────────────────────────────────────────
+  // 左上角转向箭头（图片，只在转向类型变化时重发）+ 5 行原生文本（只传变化的行）。
+
+  private arrowCanvas = createCanvas(136, 136)
+  private lastArrowKey = ''
+
+  private navTexts(m: HudModel): Record<string, string> {
+    const nav = m.nav!
+    const route = m.route!
+    const focus = m.view === 'focus'
+    const dist = fmtDistStr(nav.distToManeuver)
+    const act = nav.maneuver === 'arrive' ? '到达目的地' : MANEUVER_LABEL[nav.maneuver]
+    const road = nav.maneuver === 'arrive'
+      ? route.destName
+      : nav.nextStep?.road || (nav.nextStep?.instruction ?? '').replace(/^.*?(进入|沿)/, '$1').slice(0, 18)
+    const then = nav.thenManeuver && nav.thenManeuver !== 'straight' && nav.nextStep
+      ? `然后 ${MANEUVER_LABEL[nav.thenManeuver]} · ${fmtDistStr(nav.thenDistance ?? 0)}`
+      : ' '
+    const segs = 20
+    const k = Math.round(nav.progress * segs)
+    const eta = fmtClock(new Date(m.now.getTime() + nav.etaSec * 1000))
+    const bat = m.glasses.battery !== undefined ? `  眼镜 ${m.glasses.battery}%` : ''
+    return {
+      main: `${dist}  ${act}\n${road ? '进入 ' + road : ' '}`,
+      then: focus ? ' ' : then,
+      prog: focus ? ' ' : `${'━'.repeat(k)}${'─'.repeat(segs - k)}  ${Math.round(nav.progress * 100)}%`,
+      stats: focus ? ' ' : `剩余 ${fmtDistStr(nav.remaining)}   ${fmtDurationZh(nav.etaSec)}   到达 ${eta}\n${MODE_LABEL[route.mode]}   ${fmtSpeed(m.fix?.speed ?? NaN)} km/h`,
+      status: m.toast ? `※ ${m.toast}` : `${fmtClock(m.now)}${bat}${m.simulated ? '  模拟' : ''}`,
+    }
+  }
+
+  private drawArrow(m: HudModel): HTMLCanvasElement {
+    const key = `${m.nav!.maneuver}|${m.view}`
+    if (key !== this.lastArrowKey) {
+      this.lastArrowKey = key
+      const ctx = this.arrowCanvas.getContext('2d', { willReadFrequently: true })!
+      ctx.fillStyle = '#000'
+      ctx.fillRect(0, 0, 136, 136)
+      brackets(ctx, 2, 2, 132, 132, 16, 9)
+      maneuverIcon(ctx, m.nav!.maneuver, 68, 70, m.view === 'focus' ? 70 : 104)
+    }
+    return this.arrowCanvas
+  }
+
+  private renderNavTemplate(m: HudModel): void {
+    void this.display.showTemplate(NAV_TEMPLATE).then(() => {
+      this.display.setTemplate(this.navTexts(m), { arrow: this.drawArrow(m) })
+    })
+  }
+
   render(): void {
     const m = this.model()
+    const useTemplate = (m.view === 'nav' || m.view === 'focus') && !!this.nav && !!this.route && this.display.mode === 'image' && !this.display.listOpen
+    if (useTemplate) return this.renderNavTemplate(m)
+    if (this.display.templateKey) void this.display.showTiles()
     this.display.setTileIntervals(this.tileIntervals(m.view))
     const ctx = this.frame.getContext('2d')!
     renderHud(ctx, m)
@@ -823,6 +891,8 @@ export class HudApp {
     const lines: string[] = []
     d.pause()
     for (let i = 0; i < 100 && d.busy; i++) await new Promise((r) => setTimeout(r, 100))
+    // 测试用四图块页（模板页没有图块容器）
+    await d.showTiles()
     const W = 288
     const H = 144
     const black = new Uint8Array(W * H)
@@ -858,6 +928,7 @@ export class HudApp {
         const r2 = await d.benchmarkText(' ')
         lines.push(`${name}：${r1.ms}ms / ${r2.ms}ms${r1.ok ? '' : '（失败）'}`)
       }
+      lines.push(`文本控件平均：${Math.round(d.stats.textAvgMs)}ms`)
       lines.push(`当前编码：${d.stats.encoding === 'gray4' ? '4位灰度 PNG' : 'RGBA PNG'} · 平均 ${Math.round(d.stats.avgSendMs)}ms/块`)
     } finally {
       await d.resume({ rebuild: false })

@@ -189,7 +189,8 @@ try {
   else if (cmd === 'raw') {
     // node scripts/hub-upload.mjs raw GET /api/v1/apps/listing-draft
     const [m, p2] = process.argv.slice(3)
-    console.log(JSON.stringify(await call(m, p2, { params: { package_id: PKG } }), null, 1).slice(0, 3000))
+    const out = JSON.stringify(await call(m, p2, { params: { package_id: PKG } }), null, 1)
+    console.log(process.env.FULL ? out : out.slice(0, 3000))
   }
   else if (cmd === 'covers') {
     const cfg = await get('/api/v1/misc/covers_config')
