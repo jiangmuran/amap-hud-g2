@@ -562,8 +562,8 @@ function drawRadar(ctx: Ctx, m: HudModel): void {
   line(ctx, cx - R, cy, cx + R, cy, 4)
   line(ctx, cx, cy - R, cx, cy + R, 4)
   text(ctx, fmtDistStr(range), cx + 4, cy - R + 14, { font: font.label(11, 700), level: 7 })
-  // 扫描线
-  const sweep = ((m.t / 1000) * 90) % 360
+  // 扫描线（静态：持续动画会让雷达图块每帧都要重发）
+  const sweep = 45
   for (let k = 0; k < 8; k++) {
     const a = ((sweep - k * 5) * Math.PI) / 180
     line(ctx, cx, cy, cx + Math.sin(a) * R, cy - Math.cos(a) * R, 12 - k * 1.4, k === 0 ? 2 : 1.5)
@@ -684,7 +684,7 @@ function drawCruise(ctx: Ctx, m: HudModel): void {
 function drawArrival(ctx: Ctx, m: HudModel): void {
   const cx = 130
   const cy = 144
-  const pulse = (m.t / 1000) % 2
+  const pulse = 0 // 静态，避免到达页持续重发
   for (let i = 0; i < 3; i++) {
     const r = 30 + ((pulse * 30 + i * 30) % 90)
     ctx.strokeStyle = L(15 - r / 9)

@@ -154,9 +154,10 @@ export class HudApp {
     return () => this.listeners.delete(cb)
   }
 
-  private changed(): void {
+  /** 通知手机端；render=false 时不立即重绘眼镜（交给刷新节拍），避免后台流量挤占操作响应 */
+  private changed(render = true): void {
     for (const cb of this.listeners) cb()
-    this.requestRender()
+    if (render) this.requestRender()
   }
 
   async updateSettings(patch: Partial<Settings>): Promise<void> {
@@ -191,6 +192,7 @@ export class HudApp {
 
   toast(text: string, ms = 3000): void {
     this.toastMsg = { text, until: Date.now() + ms }
+    this.display.boost(1200)
     this.requestRender()
     setTimeout(() => this.requestRender(), ms + 50)
   }
@@ -199,6 +201,7 @@ export class HudApp {
 
   handleInput(a: InputAction): void {
     const views = this.views()
+    if (['next', 'prev', 'click', 'longpress', 'double'].includes(a.kind)) this.display.markInput()
     // 对话框挂起时又收到普通输入，说明对话框已关闭（部分宿主不发前后台事件）
     if (this.exitDialogPending && ['next', 'prev', 'click', 'longpress'].includes(a.kind)) this.endExitDialog()
 
@@ -484,7 +487,7 @@ export class HudApp {
       else if (this.nav.offRoute) void this.reroute(false)
     }
     void this.refreshPlace(fix.p, false)
-    this.changed()
+    this.changed(false)
   }
 
   private async refreshPlace(p: LngLat, force: boolean): Promise<void> {
@@ -701,8 +704,29 @@ export class HudApp {
 
   // ── 渲染 ─────────────────────────────────────────────────────────
 
+  // ── 画面稳定化：小幅变化不重绘，减少 BLE 图块流量 ─────────────────
+  private disp?: { p: LngLat; heading: number; speed: number; s: number; t: number }
+
+  /** 位置移动 ≥ 约 4 像素、航向变化 ≥ 6°、速度变化 ≥ 0.5km/h 或超过 10 秒才更新显示值 */
+  private stableFix(): { fix?: import('./nav/tracker').Fix; s?: number } {
+    const f = this.loc.last
+    if (!f) return {}
+    const now = Date.now()
+    const d = this.disp
+    const moveTh = 3 + (Number.isFinite(f.speed) ? f.speed : 0) * 1.0
+    const hd = Number.isFinite(f.heading) && d && Number.isFinite(d.heading) ? Math.abs(angleDiff(d.heading, f.heading)) : 999
+    if (!d || haversine(d.p, f.p) >= moveTh || hd >= 6 || now - d.t > 10_000) {
+      this.disp = { p: f.p, heading: f.heading, speed: d && Math.abs((d.speed || 0) - (f.speed || 0)) < 0.14 ? d.speed : f.speed, s: this.nav?.s ?? 0, t: now }
+    } else if (Number.isFinite(f.speed) && Math.abs((d.speed || 0) - f.speed) >= 0.14) {
+      d.speed = f.speed
+    }
+    const dd = this.disp!
+    return { fix: { ...f, p: dd.p, heading: dd.heading, speed: dd.speed }, s: dd.s }
+  }
+
   model(): HudModel {
     const now = Date.now()
+    const stable = this.stableFix()
     let view: ViewId = this.poiDetail ? 'poi' : this.view
     const toast = this.toastMsg && this.toastMsg.until > now ? this.toastMsg.text : undefined
     if (
@@ -717,8 +741,8 @@ export class HudApp {
       view,
       viewIndex: this.viewIndex,
       viewCount: this.views().length,
-      fix: this.loc.last,
-      nav: this.nav,
+      fix: stable.fix,
+      nav: this.nav && stable.s !== undefined ? { ...this.nav, s: Math.min(this.nav.s, stable.s + 0.001) } : this.nav,
       route: this.route,
       trip: this.trip.snapshot(),
       glasses: this.glasses,
@@ -741,14 +765,17 @@ export class HudApp {
     }
   }
 
-  /** 状态变化时尽快重绘（合并 30ms 内的多次请求） */
+  /**
+   * 状态变化时立即重绘（同一轮事件里的多次请求合并为一次）。
+   * 用微任务而不是 setTimeout：SDK 会接管定时器，真机后台时可能被延后。
+   */
   requestRender(): void {
     if (this.renderQueued) return
     this.renderQueued = true
-    setTimeout(() => {
+    queueMicrotask(() => {
       this.renderQueued = false
       this.render()
-    }, 30)
+    })
   }
 
   private scheduleRender(ms: number): void {
@@ -759,8 +786,30 @@ export class HudApp {
     }, ms)
   }
 
+  /**
+   * 按视图和速度给四个图块（左上、右上、左下、右下）设置最小刷新间隔。
+   * 地图类区域随速度自适应：步行约 3 秒、骑行约 2 秒、驾车约 0.8 秒；
+   * 文字信息区 1 秒；宿主单块发送越慢，间隔整体放大。
+   */
+  private tileIntervals(view: ViewId): number[] {
+    const sp = this.loc.last?.speed
+    const speed = sp !== undefined && Number.isFinite(sp) ? sp : 0
+    const map = Math.round(Math.min(3000, Math.max(800, 3200 - speed * 160)))
+    const slow = Math.min(2, Math.max(1, this.display.stats.avgSendMs / 160))
+    const k = (a: number[]) => a.map((v) => Math.round(v * slow))
+    switch (view) {
+      case 'nav': return k([800, map, 1000, map])
+      case 'overview': return k([map * 1.5, map * 1.5, map * 1.5, map * 1.5])
+      case 'telemetry': return k([2000, 2000, 2000, 2000])
+      case 'focus': return k([2000, 4000, 4000, 4000])
+      case 'cruise': return k([1000, 1000, 1500, 1500])
+      default: return k([1000, 1000, 1000, 1000])
+    }
+  }
+
   render(): void {
     const m = this.model()
+    this.display.setTileIntervals(this.tileIntervals(m.view))
     const ctx = this.frame.getContext('2d')!
     renderHud(ctx, m)
     if (this.display.mode === 'image') this.display.submit(this.frame)

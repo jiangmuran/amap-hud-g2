@@ -66,6 +66,10 @@ const LIST_TITLE = { id: 21, name: 'list-title' }
 const LIST_BODY = { id: 22, name: 'list-body' }
 
 export interface DisplayStats {
+  /** 各图块累计发送次数（左上、右上、左下、右下） */
+  perTile: number[]
+  /** 最近一次「操作 → 画面发完」的耗时 */
+  inputLatencyMs: number
   sends: number
   failures: number
   lastFrameMs: number
@@ -91,14 +95,14 @@ export class GlassesDisplay {
   ready = false
   /** 宿主模态层（退出确认）显示期间暂停发送：此时发送必然失败，不能算作通道损坏 */
   private paused = false
-  readonly stats: DisplayStats = { sends: 0, failures: 0, lastFrameMs: 0, avgSendMs: 0, tilesLastFrame: 0 }
+  readonly stats: DisplayStats = { perTile: [0, 0, 0, 0], inputLatencyMs: 0, sends: 0, failures: 0, lastFrameMs: 0, avgSendMs: 0, tilesLastFrame: 0 }
   /** 已成功发送到眼镜的画面（手机端镜像预览用） */
   readonly shadow = createCanvas(SCREEN_W, SCREEN_H)
   onShadowChange?: () => void
   onModeChange?: (m: DisplayMode) => void
 
   private frame = createCanvas(SCREEN_W, SCREEN_H)
-  private tileCanvas = createCanvas(TILE_W, TILE_H)
+  private tileCanvases: HTMLCanvasElement[] = []
   private sent: (number | null)[] = TILES.map(() => null)
   private dirty = false
   private pumping = false
@@ -109,6 +113,14 @@ export class GlassesDisplay {
   private textPending: TextFrame | null = null
   /** 非空时显示原生列表页，HUD 帧暂存不发送 */
   private list: ListPage | null = null
+  /** 用户操作发生的时间，帧发完时用来计算响应耗时 */
+  private inputAt = 0
+
+  markInput(): void {
+    this.inputAt = performance.now()
+    this.boostStart = performance.now()
+    this.boostUntil = performance.now() + 1500
+  }
 
   get listOpen(): boolean {
     return this.list !== null
@@ -343,42 +355,121 @@ export class GlassesDisplay {
   }
 
   private async encode(data: ImageData): Promise<Uint8Array> {
-    ctx2d(this.tileCanvas).putImageData(data, 0, 0)
-    const blob: Blob = await new Promise((res, rej) =>
-      this.tileCanvas.toBlob((b) => (b ? res(b) : rej(new Error('toBlob failed'))), 'image/png'),
-    )
-    return new Uint8Array(await blob.arrayBuffer())
+    // 每次用独立画布：流水线下可能有两个编码同时进行
+    const c = this.tileCanvases.pop() ?? createCanvas(TILE_W, TILE_H)
+    ctx2d(c).putImageData(data, 0, 0)
+    try {
+      const blob: Blob = await new Promise((res, rej) =>
+        c.toBlob((b) => (b ? res(b) : rej(new Error('toBlob failed'))), 'image/png'),
+      )
+      return new Uint8Array(await blob.arrayBuffer())
+    } finally {
+      this.tileCanvases.push(c)
+    }
+  }
+
+  // ── 图块调度 ─────────────────────────────────────────────────────
+  // 每个图块有最小刷新间隔（由应用按视图和车速设置）；操作后短时间内不受限。
+  // 每次从「有变化且已到间隔」的图块里挑最久没刷新的发送，保证四块都能轮到，
+  // 不会因为新帧不断到来而只刷第一块。
+
+  private lastSentAt: number[] = TILES.map(() => 0)
+  private minInterval: number[] = TILES.map(() => 0)
+  private boostUntil = 0
+  private boostStart = 0
+  private wakeTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** 设置各图块（左上、右上、左下、右下）的最小刷新间隔（ms） */
+  setTileIntervals(ms: number[]): void {
+    for (let i = 0; i < TILES.length; i++) this.minInterval[i] = Math.max(0, ms[i] ?? 0)
+  }
+
+  /** 短时间内忽略刷新间隔（用户操作、提示信息） */
+  boost(ms = 1500): void {
+    if (performance.now() >= this.boostUntil) this.boostStart = performance.now()
+    this.boostUntil = Math.max(this.boostUntil, performance.now() + ms)
+    this.dirty = true
+    void this.pump()
+  }
+
+  /** 操作后每个图块都已刷新过（或本来就没变）即视为画面跟上了操作 */
+  private checkInputDone(): void {
+    if (!this.inputAt) return
+    for (let i = 0; i < TILES.length; i++) {
+      if (this.lastSentAt[i] >= this.inputAt) continue
+      if (this.quantizeTile(i).hash === this.sent[i]) continue
+      return
+    }
+    this.stats.inputLatencyMs = performance.now() - this.inputAt
+    this.inputAt = 0
   }
 
   private async pump(): Promise<void> {
     if (this.pumping || this.paused || this.list || !this.ready || this.mode !== 'image') return
     this.pumping = true
     try {
-      while (this.dirty && this.mode === 'image' && !this.paused && !this.list) {
+      let frameStart = performance.now()
+      let count = 0
+      while (this.mode === 'image' && !this.paused && !this.list) {
         this.dirty = false
-        const t0 = performance.now()
-        let count = 0
+        const now = performance.now()
+        const boosted = now < this.boostUntil
+        let pick = -1
+        let pickQ: { hash: number; data: ImageData } | null = null
+        let waitMs = Infinity
+        let anyChanged = false
         for (let i = 0; i < TILES.length; i++) {
-          if (this.mode !== 'image' || this.paused || this.list) break
           const q = this.quantizeTile(i)
           if (q.hash === this.sent[i]) continue
-          const ok = await this.sendTile(i, q)
-          if (ok) count++
-          else break
+          anyChanged = true
+          const due = this.lastSentAt[i] + this.minInterval[i] - now
+          if (!boosted && due > 0) {
+            waitMs = Math.min(waitMs, due)
+            continue
+          }
+          // 操作后：本轮还没刷过的块按 左上→右上→左下→右下 顺序；平时：最久没刷的优先
+          const rank = (j: number) => (boosted ? (this.lastSentAt[j] >= this.boostStart ? 1e9 + j : j) : this.lastSentAt[j])
+          if (pick < 0 || rank(i) < rank(pick)) {
+            pick = i
+            pickQ = q
+          }
         }
-        if (count) {
-          this.stats.lastFrameMs = performance.now() - t0
-          this.stats.tilesLastFrame = count
+        if (pick < 0) {
+          this.checkInputDone()
+          if (!anyChanged) {
+            if (count) {
+              this.stats.lastFrameMs = performance.now() - frameStart
+              this.stats.tilesLastFrame = count
+            }
+
+          } else if (Number.isFinite(waitMs)) {
+            // 有变化但还没到间隔：到点再来
+            if (this.wakeTimer) clearTimeout(this.wakeTimer)
+            this.wakeTimer = setTimeout(() => {
+              this.wakeTimer = null
+              void this.pump()
+            }, waitMs + 5)
+          }
+          break
         }
+        const bytes = await this.encode(pickQ!.data)
+        const ok = await this.sendTile(pick, pickQ!, bytes)
+        if (!ok) break
+        this.lastSentAt[pick] = performance.now()
+        this.stats.perTile[pick]++
+        this.checkInputDone()
+        if (count === 0) frameStart = now
+        count++
       }
     } finally {
       this.pumping = false
     }
+    // 发送期间来了新帧且没有在等间隔，继续
+    if (this.dirty && !this.wakeTimer) void this.pump()
   }
 
-  private async sendTile(i: number, q: { hash: number; data: ImageData }): Promise<boolean> {
+  private async sendTile(i: number, q: { hash: number; data: ImageData }, bytes: Uint8Array): Promise<boolean> {
     const t = TILES[i]
-    const bytes = await this.encode(q.data)
     const t0 = performance.now()
     let res: ImageRawDataUpdateResult
     try {

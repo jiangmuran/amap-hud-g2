@@ -788,6 +788,7 @@ export class PhoneUI {
         ['显示模式', this.app.display.mode === 'image' ? '图形' : '文本（兜底）'],
         ['图块发送', `${st.sends} 次 · 失败 ${st.failures}`],
         ['平均耗时', `${Math.round(st.avgSendMs)} ms / 图块`],
+        ['操作响应', st.inputLatencyMs ? `${Math.round(st.inputLatencyMs)} ms（最近一次）` : '—'],
         ['街道底图', this.app.basemap.lastError ?? (this.app.basemap.current ? `z${this.app.basemap.current.zoom} 已加载` : '未加载')],
       ]
       diag.innerHTML = rows.map(([k, v]) => `<div class="cell"><span class="grow">${k}</span><span class="detail" style="font-size:15px">${esc(v)}</span></div>`).join('')
